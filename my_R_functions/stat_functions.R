@@ -52,7 +52,7 @@ make.pred.df.from.glm <- function(glm.model,df.testdata) {
     
     preds.test <- predict.glm(object=glm.model, newdata=df.testdata, type="response")
     
-    pred.df <- data.frame("ChIPseq.bound"=df.testdata$CHIPseq.bound,"Prediction"=preds.test)
+    pred.df <- data.frame("ChIPseq.bound"=df.testdata$ChIPseq.bound,"Prediction"=preds.test)
     
     pred.df$Model.Name = glm.model$Model.Name
     return(pred.df)
