@@ -1,0 +1,55 @@
+# Load all libraries and functions
+
+libs <- c(
+    'RColorBrewer',
+    'ggplot2',
+    'xgboost',
+    'glmnet',
+    'dplyr',
+    'tidyr',
+    'pROC',
+    'ROCR',
+    'stringr',
+    'caret',
+    'caTools'
+)
+
+for (lib in libs) {
+    if (!require(lib, character.only = TRUE, quietly = TRUE)) {
+        install.packages(lib, repos='http://cran.us.r-project.org')
+    }
+}
+
+(.packages())
+
+source("../my_R_functions/utility_functions.R")
+source("../my_R_functions/stat_functions.R")
+source("../my_R_functions/plot_functions.R")
+source("/ssd/mrichard/github/BDDS/trenadb/src/utils.R")
+source("/ssd/mrichard/github/BDDS/footprints/testdb/src/dbFunctions.R")
+
+# Load the motif data and the big dataset, plus make the names better
+load("../Rdata_files/motif_class_pairs.Rdata")
+load("/ssd/mrichard/data/joined.motifs.only.9.Rdata") # Takes ~
+colnames(motifs.only) <- make.names(colnames(motifs.only), unique=TRUE)
+
+# Remove columns we don't need for this part, then drop the original data
+cols_to_drop <- c('motifname', 'chrom', 'strand', 'loc')
+
+motifs.only %>%
+    filter(chrom %in% c("2","4")) %>%
+    select(-one <- of(cols_to_drop)) ->
+    val <- df
+
+motifs.only %>%
+    filter(chrom %in% c("1","3","5")) %>%
+    select(-one <- of(cols_to_drop)) ->
+    test <- df
+
+motifs.only %>%
+    filter(!(chrom %in% c("1","2","3","4","5"))) %>%
+    select(-one <- of(cols_to_drop)) ->
+    train <- df
+
+remove(motifs.only)
+
