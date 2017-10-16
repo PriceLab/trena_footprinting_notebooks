@@ -118,10 +118,10 @@ df.sum <- rbind(df.notf,tfclass.row)
 
 png("../figures/motifOnlyImpMatrix.png")
 ggplot(data=df.sum, aes(x=reorder(Feature, Gain), y=Gain)) +
-    geom <- bar(stat="identity") +
-    coord <- flip() +
-        theme <- minimal(base <- size = 30) +
-                labs(x = "Feature", y="Gain")
+    geom_bar(stat="identity") +
+    coord_flip() +
+    theme_minimal(base_size = 30) +
+    labs(x = "Feature", y="Gain")
 dev.off()
 
 # Create stats for GBM
@@ -194,6 +194,9 @@ all.stats.df <- rbind(
     glm.stat.df,
     stats.regressors.filtered.df
     )
+
+# Save the "all.stats.df" for later
+save(all.stats.df, file = "/ssd/mrichard/data/motifOnlyAllStats.Rdata")
 
 # MCC curves
 png("../figures/motifOnlyMCC.png")
