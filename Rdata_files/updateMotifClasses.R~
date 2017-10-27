@@ -1,9 +1,0 @@
-# Load MotifDb, which already has the data
-library(MotifDb)
-
-md.tbl <- read.table(system.file(package = "MotifDb",
-                                 "inst/scripts/import/jaspar2016/md-raw.tsv"))
-
-
-
-                   
