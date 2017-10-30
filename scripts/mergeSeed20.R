@@ -121,11 +121,11 @@ library(BiocParallel)
 register(MulticoreParam(workers = 25, stop.on.error = FALSE, log = TRUE), default = TRUE)
 
 all.TF.df.fimo.hint.well <- bplapply(chromosomes, merge_fimo_hint_wellington_one_chrom,
-                   fimo_tbl = ,
-                   hint_regions_tbl = ,
-                   hint_hits_tbl = ,
-                   well_regions_tbl = ,
-                   well_hits_tbl = )
+                   fimo_tbl = all.TF.df,
+                   hint_regions_tbl = hint_regions,
+                   hint_hits_tbl = hint_hits,
+                   well_regions_tbl = well_regions,
+                   well_hits_tbl = well_hits)
 
 # Combine them
 all.TF.df.fimo.hint.well <- bind_rows(all.TF.df.fimo.hint.well)
