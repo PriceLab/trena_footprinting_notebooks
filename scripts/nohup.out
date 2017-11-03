@@ -17,16 +17,21 @@ Type 'demo()' for some demos, 'help()' for on-line help, or
 'help.start()' for an HTML browser interface to help.
 Type 'q()' to quit R.
 
+> # Load all libraries and functions
+> 
 > libs <- c(
++     'RColorBrewer',
++     'ggplot2',
++     'xgboost',
++     'glmnet',
 +     'dplyr',
 +     'tidyr',
++     'pROC',
++     'ROCR',
 +     'stringr',
-+     'ggplot2',
-+     'GenomicRanges',
-+     'RPostgreSQL',
-+     'doMC',
-+     'numbers',
-+     'doParallel'
++     'caret',
++     'caTools',
++     'fst'
 + )
 > 
 > for (lib in libs) {
@@ -34,8 +39,14 @@ Type 'q()' to quit R.
 +         install.packages(lib, repos='http://cran.us.r-project.org')
 +     }
 + }
+Loaded glmnet 2.0-12
+
 
 Attaching package: ‘dplyr’
+
+The following object is masked from ‘package:xgboost’:
+
+    slice
 
 The following objects are masked from ‘package:stats’:
 
@@ -46,6 +57,48 @@ The following objects are masked from ‘package:base’:
     intersect, setdiff, setequal, union
 
 
+Attaching package: ‘tidyr’
+
+The following object is masked from ‘package:Matrix’:
+
+    expand
+
+Type 'citation("pROC")' for a citation.
+
+Attaching package: ‘pROC’
+
+The following object is masked from ‘package:glmnet’:
+
+    auc
+
+The following objects are masked from ‘package:stats’:
+
+    cov, smooth, var
+
+
+Attaching package: ‘gplots’
+
+The following object is masked from ‘package:stats’:
+
+    lowess
+
+> 
+> (.packages())
+ [1] "fst"          "caTools"      "caret"        "lattice"      "stringr"     
+ [6] "ROCR"         "gplots"       "pROC"         "tidyr"        "dplyr"       
+[11] "glmnet"       "foreach"      "Matrix"       "xgboost"      "ggplot2"     
+[16] "RColorBrewer" "stats"        "graphics"     "grDevices"    "utils"       
+[21] "datasets"     "methods"      "base"        
+> 
+> source("../my_R_functions/utility_functions.R")
+> source("../my_R_functions/stat_functions.R")
+> source("../my_R_functions/plot_functions.R")
+> source("/ssd/mrichard/github/BDDS/trenadb/src/utils.R")
+Loading required package: DBI
+Loading required package: stats4
+Loading required package: BiocGenerics
+Loading required package: parallel
+
 Attaching package: ‘BiocGenerics’
 
 The following objects are masked from ‘package:parallel’:
@@ -54,9 +107,17 @@ The following objects are masked from ‘package:parallel’:
     clusterExport, clusterMap, parApply, parCapply, parLapply,
     parLapplyLB, parRapply, parSapply, parSapplyLB
 
+The following object is masked from ‘package:pROC’:
+
+    var
+
 The following objects are masked from ‘package:dplyr’:
 
     combine, intersect, setdiff, union
+
+The following objects are masked from ‘package:Matrix’:
+
+    colMeans, colSums, rowMeans, rowSums, which
 
 The following objects are masked from ‘package:stats’:
 
@@ -71,8 +132,17 @@ The following objects are masked from ‘package:base’:
     rbind, Reduce, rowMeans, rownames, rowSums, sapply, setdiff, sort,
     table, tapply, union, unique, unsplit, which, which.max, which.min
 
+Loading required package: S4Vectors
 
 Attaching package: ‘S4Vectors’
+
+The following object is masked from ‘package:caTools’:
+
+    runmean
+
+The following object is masked from ‘package:gplots’:
+
+    space
 
 The following object is masked from ‘package:tidyr’:
 
@@ -82,10 +152,15 @@ The following objects are masked from ‘package:dplyr’:
 
     first, rename
 
+The following object is masked from ‘package:Matrix’:
+
+    expand
+
 The following object is masked from ‘package:base’:
 
     expand.grid
 
+Loading required package: IRanges
 
 Attaching package: ‘IRanges’
 
@@ -93,19 +168,224 @@ The following objects are masked from ‘package:dplyr’:
 
     collapse, desc, slice
 
+The following object is masked from ‘package:xgboost’:
+
+    slice
+
+Loading required package: GenomeInfoDb
+> source("/ssd/mrichard/github/BDDS/footprints/testdb/src/dbFunctions.R")
 > 
-> library(BSgenome.Hsapiens.UCSC.hg38)
-Loading required package: BSgenome
-Loading required package: Biostrings
-Loading required package: XVector
-
-Attaching package: ‘Biostrings’
-
-The following object is masked from ‘package:base’:
-
-    strsplit
-
-Loading required package: rtracklayer
+> # Load the motif data and the big dataset, plus make the names better
+> load("../Rdata_files/motif_class_pairs.Rdata")
+> #load("/ssd/mrichard/data/joined.annotated.9.Rdata") # Takes ~2 min to load
+> all.TF.df.fimo.hint.well.annotated <- read.fst("/ssd/mrichard/data/joined.annotated.10M.Rdata")
+> colnames(all.TF.df.fimo.hint.well.annotated) <- make.names(colnames(all.TF.df.fimo.hint.well.annotated), unique=TRUE)
+> 
+> # Filter the entries w/o fp or hits
+> all.TF.df.fimo.hint.well.annotated %>%
++     filter(h_frac_16 > 0 | w_frac_16 > 0 | h_frac_20 > 0 | w_frac_20 > 0 | cs_hit > 0) ->
++         df_only_footprint_hits
+> 
+> 
+> # Remove columns we don't need for this part, then drop the original data
+> # Include the HINT/Wellington columns
+> cols_to_drop <- c('motifname', 'chrom', 'strand', 'loc',
++                   'h_frac_16', 'h_frac_20', 'h_max_score_16', 'h_max_score_20',
++                   'w_frac_16', 'w_frac_20', 'w_min_score_16', 'w_min_score_20')
+> 
+> df_only_footprint_hits %>%
++     filter(chrom %in% c("2","4")) %>%
++     select(-one_of(cols_to_drop)) ->
++     val_df
+> 
+> df_only_footprint_hits %>%
++     filter(chrom %in% c("1","3","5")) %>%
++     select(-one_of(cols_to_drop)) ->
++     test_df
+> 
+> df_only_footprint_hits %>%
++     filter(!(chrom %in% c("1","2","3","4","5"))) %>%
++     select(-one_of(cols_to_drop)) ->
++     train_df
+> 
+> remove(df_only_footprint_hits, all.TF.df.fimo.hint.well.annotated)
+> 
+> # Divide into train/test/validation sets and split X/Y
+> val_df %>%
++     select(-cs_hit) %>%
++     as.matrix ->
++     X_val
+> 
+> val_df %>%
++     select(cs_hit) %>%
++     as.matrix ->
++     y_val
+> 
+> test_df %>%
++     select(-cs_hit) %>%
++     as.matrix ->
++     X_test
+> 
+> test_df %>%
++     select(cs_hit) %>%
++     as.matrix ->
++     y_test
+> 
+> train_df %>%
++     select(-cs_hit) %>%
++     as.matrix ->
++     X_train
+> 
+> train_df %>%
++     select(cs_hit) %>%
++     as.matrix ->
++     y_train
+> 
+> remove(val_df, test_df, train_df)
+> 
+> # MODEL 1: GBM
+> param <- list("objective" = "binary:logistic",
++               "max.depth" = 7,
++               "eta" = 0.005,
++               "eval.metric" = "auc"
++               )
+> 
+> gbdt_medium <- xgboost(
++             params = param,
++             data = X_train,
++             label = y_train,
++             nround = 200,
++             verbose = FALSE,
++             missing = NA
++         )
+> 
+> gbdt_medium$Model.Name <- "trees with classes"
+> xgb.save(gbdt_medium, "../saved_models/xgboost_TF_site_predict_motif_only.10M.model")
+[1] TRUE
+> 
+> # Create importance matrix plot
+> motif.class$class <- lapply(motif.class$class, make.names, unique=TRUE)
+> importance_matrix <- xgb.importance(colnames(X_train),model=gbdt_medium)
+> df <- as_data_frame(importance_matrix)
+> df.tf <- subset(df, Feature %in% unique(motif.class$class))
+> df.notf <- subset(df, !(Feature %in% unique(motif.class$class)))
+> tfclass.row <- c("TF_class", unname(as.list(colSums(df.tf[!(colnames(df.tf) %in% c("Feature"))]))) )
+> names(tfclass.row) <- colnames(df)
+> df.sum <- rbind(df.notf,tfclass.row)
+> 
+> 
+> png("../figures/motifOnlyImpMatrix.png")
+> ggplot(data=df.sum, aes(x=reorder(Feature, Gain), y=Gain)) +
++     geom_bar(stat="identity") +
++     coord_flip() +
++     theme_minimal(base_size = 30) +
++     labs(x = "Feature", y="Gain")
+> dev.off()
+null device 
+          1 
+> 
+> # Create stats for GBM
+> medium_pred_df <- make.pred.df.from.model(gbdt_medium, X_test, y_test)
+> colnames(medium_pred_df)[1] <- "ChIPseq.bound"
+> medium_stat_df <- make.stats.df.from.preds(medium_pred_df)
+> 
+> 
+> # MODEL 2: Full Linear Model
+> X_train_lin <- X_train
+> y_train_lin <- y_train
+> X_test_lin  <- X_test
+> y_test_lin  <- y_test
+> 
+> tf.regressors <- colnames(X_train_lin)[colnames(X_train_lin) %in% unique(motif.class$class)]
+> non.tf.regressors <-  colnames(X_train_lin)[!colnames(X_train_lin) %in% unique(motif.class$class)]
+> 
+> tf.regressors.formula <- paste("as.factor(", paste(tf.regressors, collapse=") + as.factor("), ")")
+> non.tf.regressors.formula <- paste(non.tf.regressors, collapse=" + ")
+> all.regressors.formula <- paste(non.tf.regressors.formula, tf.regressors.formula, sep=" + ")
+> 
+> glm.formula <- paste("ChIPseq.bound ~ ", all.regressors.formula, sep='')
+> 
+> glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
+> glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
+> 
+> glm.all <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
+> glm.all$Model.Name <- "glm small"
+> 
+> # Create stats for Full Linear Model
+> glm.pred.df <- make.pred.df.from.glm(glm.all, glm.df.test)
+Warning message:
+In predict.lm(object, newdata, se.fit, scale = 1, type = ifelse(type ==  :
+  prediction from a rank-deficient fit may be misleading
+> glm.stat.df <- make.stats.df.from.preds(glm.pred.df)
+> 
+> 
+> # MODEL 3: Individual Linear Models
+> stats.regressors.df <- data.frame()
+> 
+> for (this.regressor in colnames(X_train_lin)) {
++ 
++     if (this.regressor %in% unique(motif.class$class)) {
++         glm.formula <- paste("ChIPseq.bound ~ ", "as.factor(", this.regressor, ")",sep='')
++     } else {
++         glm.formula <- paste("ChIPseq.bound ~ ", this.regressor,sep='')
++     }
++ 
++     glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
++     glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
++ 
++     # Make the model
++     glm.single <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
++     glm.single$Model.Name <- paste("glm ", this.regressor, sep='')
++ 
++     # Create the stats
++     glm.pred.single.df <- make.pred.df.from.glm(glm.single, glm.df.test)
++     glm.stat.single.df <- make.stats.df.from.preds(glm.pred.single.df)
++ 
++     stats.regressors.df <- rbind(stats.regressors.df, glm.stat.single.df)
++ 
++ }
+> 
+> stats.regressors.df %>%
++     filter(Model.Name %in% c("glm motifscore",
++                              "glm gc_content",
++                              "glm asinh_tss_dist")) ->
++     stats.regressors.filtered.df
+> 
+> # Compare performance using 3 figures:
+> all.stats.df <- rbind(
++     medium_stat_df,
++     glm.stat.df,
++     stats.regressors.filtered.df
++     )
+> 
+> # Save the "all.stats.df" for later
+> save(all.stats.df, file = "/ssd/mrichard/data/motifOnlyAllStats.10M.Rdata")
+> 
+> # MCC curves
+> png("../figures/motifOnlyMCC.png")
+> plot.mattcc.curve(all.stats.df) + theme_minimal(base_size = 15)
+> dev.off()
+null device 
+          1 
+> 
+> 
+> # ROC curves
+> png("../figures/motifOnlyROC.png")
+> plot.roc.curve(all.stats.df) + theme_minimal(base_size = 15)
+> dev.off()
+null device 
+          1 
+> 
+> 
+> # Precision-Recall curves
+> png("../figures/motifOnlyPreRec.png")
+> plot.precrecall.curve(all.stats.df) + theme_minimal(base_size = 15)
+Warning message:
+Removed 50 rows containing missing values (geom_path). 
+> dev.off()
+null device 
+          1 
+> 
 
 R version 3.4.2 (2017-09-28) -- "Short Summer"
 Copyright (C) 2017 The R Foundation for Statistical Computing
@@ -125,16 +405,21 @@ Type 'demo()' for some demos, 'help()' for on-line help, or
 'help.start()' for an HTML browser interface to help.
 Type 'q()' to quit R.
 
+> # Load all libraries and functions
+> 
 > libs <- c(
++     'RColorBrewer',
++     'ggplot2',
++     'xgboost',
++     'glmnet',
 +     'dplyr',
 +     'tidyr',
++     'pROC',
++     'ROCR',
 +     'stringr',
-+     'ggplot2',
-+     'GenomicRanges',
-+     'RPostgreSQL',
-+     'doMC',
-+     'numbers',
-+     'doParallel'
++     'caret',
++     'caTools',
++     'fst'
 + )
 > 
 > for (lib in libs) {
@@ -142,8 +427,14 @@ Type 'q()' to quit R.
 +         install.packages(lib, repos='http://cran.us.r-project.org')
 +     }
 + }
+Loaded glmnet 2.0-12
+
 
 Attaching package: ‘dplyr’
+
+The following object is masked from ‘package:xgboost’:
+
+    slice
 
 The following objects are masked from ‘package:stats’:
 
@@ -154,6 +445,48 @@ The following objects are masked from ‘package:base’:
     intersect, setdiff, setequal, union
 
 
+Attaching package: ‘tidyr’
+
+The following object is masked from ‘package:Matrix’:
+
+    expand
+
+Type 'citation("pROC")' for a citation.
+
+Attaching package: ‘pROC’
+
+The following object is masked from ‘package:glmnet’:
+
+    auc
+
+The following objects are masked from ‘package:stats’:
+
+    cov, smooth, var
+
+
+Attaching package: ‘gplots’
+
+The following object is masked from ‘package:stats’:
+
+    lowess
+
+> 
+> (.packages())
+ [1] "fst"          "caTools"      "caret"        "lattice"      "stringr"     
+ [6] "ROCR"         "gplots"       "pROC"         "tidyr"        "dplyr"       
+[11] "glmnet"       "foreach"      "Matrix"       "xgboost"      "ggplot2"     
+[16] "RColorBrewer" "stats"        "graphics"     "grDevices"    "utils"       
+[21] "datasets"     "methods"      "base"        
+> 
+> source("../my_R_functions/utility_functions.R")
+> source("../my_R_functions/stat_functions.R")
+> source("../my_R_functions/plot_functions.R")
+> source("/ssd/mrichard/github/BDDS/trenadb/src/utils.R")
+Loading required package: DBI
+Loading required package: stats4
+Loading required package: BiocGenerics
+Loading required package: parallel
+
 Attaching package: ‘BiocGenerics’
 
 The following objects are masked from ‘package:parallel’:
@@ -162,9 +495,17 @@ The following objects are masked from ‘package:parallel’:
     clusterExport, clusterMap, parApply, parCapply, parLapply,
     parLapplyLB, parRapply, parSapply, parSapplyLB
 
+The following object is masked from ‘package:pROC’:
+
+    var
+
 The following objects are masked from ‘package:dplyr’:
 
     combine, intersect, setdiff, union
+
+The following objects are masked from ‘package:Matrix’:
+
+    colMeans, colSums, rowMeans, rowSums, which
 
 The following objects are masked from ‘package:stats’:
 
@@ -179,8 +520,17 @@ The following objects are masked from ‘package:base’:
     rbind, Reduce, rowMeans, rownames, rowSums, sapply, setdiff, sort,
     table, tapply, union, unique, unsplit, which, which.max, which.min
 
+Loading required package: S4Vectors
 
 Attaching package: ‘S4Vectors’
+
+The following object is masked from ‘package:caTools’:
+
+    runmean
+
+The following object is masked from ‘package:gplots’:
+
+    space
 
 The following object is masked from ‘package:tidyr’:
 
@@ -190,10 +540,15 @@ The following objects are masked from ‘package:dplyr’:
 
     first, rename
 
+The following object is masked from ‘package:Matrix’:
+
+    expand
+
 The following object is masked from ‘package:base’:
 
     expand.grid
 
+Loading required package: IRanges
 
 Attaching package: ‘IRanges’
 
@@ -201,626 +556,221 @@ The following objects are masked from ‘package:dplyr’:
 
     collapse, desc, slice
 
-> 
-> library(BSgenome.Hsapiens.UCSC.hg38)
-Loading required package: BSgenome
-Loading required package: Biostrings
-Loading required package: XVector
+The following object is masked from ‘package:xgboost’:
 
-Attaching package: ‘Biostrings’
+    slice
 
-The following object is masked from ‘package:base’:
-
-    strsplit
-
-Loading required package: rtracklayer
-> hg38 <- BSgenome.Hsapiens.UCSC.hg38
+Loading required package: GenomeInfoDb
+> source("/ssd/mrichard/github/BDDS/footprints/testdb/src/dbFunctions.R")
 > 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> #source("/scratch/github/BDDS/trenadb/src/utils.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
+> # Load the motif data and the big dataset, plus make the names better
+> load("../Rdata_files/motif_class_pairs.Rdata")
+> #load("/ssd/mrichard/data/joined.annotated.9.Rdata") # Takes ~2 min to load
+> all.TF.df.fimo.hint.well.annotated <- read.fst("/ssd/mrichard/data/joined.annotated.10M.Rdata")
+> colnames(all.TF.df.fimo.hint.well.annotated) <- make.names(colnames(all.TF.df.fimo.hint.well.annotated), unique=TRUE)
 > 
-> # Bring in the huge DF
-> load("/scratch/data/all.TF.fimo.samples.ratio.ALL.df.RData")
-> hg38 <- BSgenome.Hsapiens.UCSC.hg38
+> # Filter the entries w/o fp or hits
+> all.TF.df.fimo.hint.well.annotated %>%
++     filter(h_max_score_16 > 3.6 | h_max_score_20 > 3.6 | w_min_score_16 < -2.3 | w_min_score_20 < -2.3) ->
++     df_only_footprint_hits
 > 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> #source("/scratch/github/BDDS/trenadb/src/utils.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
 > 
-> # Bring in the huge DF
-> load("/scratch/data/all.TF.fimo.samples.ratio.ALL.df.RData")
+> # Remove columns we don't need for this part, then drop the original data
+> # Include the HINT/Wellington columns
+> cols_to_drop <- c('motifname', 'chrom', 'strand', 'loc',
++                   'h_frac_16', 'h_frac_20', 'h_max_score_16', 'h_max_score_20',
++                   'w_frac_16', 'w_frac_20', 'w_min_score_16', 'w_min_score_20')
 > 
-> # Read data from lymphoblast
-> db_lymph_hint <- src_postgres(drv=dbDriver("PostgreSQL"),
-+                               user="trena",
-+                               password="trena",
-+                               dbname = "lymphoblast_hint_16", #Use Seed 16
-+                               host = "localhost")
-> db_lymph_well <- src_postgres(drv=dbDriver("PostgreSQL"),
-+                               user="trena",
-+                               password="trena",
-+                               dbname = "lymphoblast_wellington_16", # Use Seed 16
-+                               host = "localhost")
-> hint_regions <- tbl(db_lymph_hint, "regions")
-> hint_hits    <- tbl(db_lymph_hint, "hits")
-> well_regions <- tbl(db_lymph_well, "regions")
-> well_hits    <- tbl(db_lymph_well, "hits")
+> df_only_footprint_hits %>%
++     filter(chrom %in% c("2","4")) %>%
++     select(-one_of(cols_to_drop)) ->
++     val_df
 > 
-> # Function for the annotation
-> merge_fimo_hint_wellington_one_chrom <- function(chrom_str,
-+                                                  fimo_tbl,
-+                                                  hint_regions_tbl,
-+                                                  hint_hits_tbl,
-+                                                  well_regions_tbl,
-+                                                  well_hits_tbl
-+                                                  ) {
-+ 
-+     # some tables use chr22 and some just use 22
-+     chrom_long_str = paste("chr",chrom_str, sep="")
-+ 
-+     # select one chromosome from my data table
-+     fimo_tbl %>%
-+         filter(chrom==chrom_str) %>%
-+         select(-empty) ->
-+         chrom_all_tf_df
-+ 
-+     # select one chromosome from hint
-+     hint_regions_tbl %>%
-+         filter(chrom==chrom_long_str) %>%
-+         left_join(hint_hits_tbl, by="loc") %>%
-+         as.data.frame %>%
-+         as.tbl %>%
-+         select(start, endpos, strand, name, score1) %>%
-+         rename("score1"="h_score") ->
-+         chrom_hint_all_tbl
-+ 
-+     # select one chromosome from wellington
-+     well_regions_tbl %>%
-+         filter(chrom==chrom_long_str) %>%
-+         left_join(well_hits_tbl, by="loc") %>%
-+         as.data.frame %>%
-+         as.tbl %>%
-+         select(start, endpos, strand, name, score1) %>%
-+         rename("score1"="w_score") ->
-+         chrom_well_all_tbl
-+ 
-+     # keep only max hint score but count total nontrivial scores
-+     chrom_hint_all_tbl %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(h_count = n()) %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(h_max_score = max(h_score)) %>%
-+         distinct(start, endpos, name, strand, .keep_all = TRUE) %>%
-+         select(-h_score) ->
-+         chrom_hint_unique_tbl
-+ 
-+     # keep only min wellington score but count total nontrivial scores
-+     chrom_well_all_tbl %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(w_count = n()) %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(w_min_score = min(w_score)) %>%
-+         distinct(start, endpos, name, strand, .keep_all = TRUE) %>%
-+         select(-w_score) ->
-+         chrom_well_unique_tbl
-+     
-+     # merge hint and wellington into my table
-+     chrom_all_tf_df %>%
-+         left_join(chrom_hint_unique_tbl, by=c("start", "endpos", "strand", "motifname"="name")) %>%
-+         left_join(chrom_well_unique_tbl, by=c("start", "endpos", "strand", "motifname"="name")) %>%
-+         replace_na(list(h_count=0, w_count=0, h_max_score=0, w_min_score=0)) ->
-+         chrom_all_tf_df_merged
-+     
-+     return(chrom_all_tf_df_merged)
-+ 
-+ }
+> df_only_footprint_hits %>%
++     filter(chrom %in% c("1","3","5")) %>%
++     select(-one_of(cols_to_drop)) ->
++     test_df
 > 
-> # Run the big function using multicore process
-> # I added X and Y here too
-> chromosomes <- as.character(c(1:22, "X","Y"))
+> df_only_footprint_hits %>%
++     filter(!(chrom %in% c("1","2","3","4","5"))) %>%
++     select(-one_of(cols_to_drop)) ->
++     train_df
 > 
-> library(BiocParallel)
-> register(MulticoreParam(workers = 25, stop.on.error = FALSE, log = TRUE), default = TRUE)
+> remove(df_only_footprint_hits, all.TF.df.fimo.hint.well.annotated)
 > 
-> all.TF.df.fimo.hint.well <- bplapply(chromosomes, merge_fimo_hint_wellington_one_chrom,
-+                    fimo_tbl = all.TF.df,
-+                    hint_regions_tbl = hint_regions,
-+                    hint_hits_tbl = hint_hits,
-+                    well_regions_tbl = well_regions,
-+                    well_hits_tbl = well_hits)
+> # Divide into train/test/validation sets and split X/Y
+> val_df %>%
++     select(-cs_hit) %>%
++     as.matrix ->
++     X_val
 > 
-> # Read data from lymphoblast
-> db_lymph_hint <- src_postgres(drv=dbDriver("PostgreSQL"),
-+                               user="trena",
-+                               password="trena",
-+                               dbname = "lymphoblast_hint_20", #Use Seed 20
-+                               host = "localhost")
-> db_lymph_well <- src_postgres(drv=dbDriver("PostgreSQL"),
-+                               user="trena",
-+                               password="trena",
-+                               dbname = "lymphoblast_wellington_20", # Use Seed 20
-+                               host = "localhost")
-> hint_regions <- tbl(db_lymph_hint, "regions")
-> hint_hits    <- tbl(db_lymph_hint, "hits")
-> well_regions <- tbl(db_lymph_well, "regions")
-> well_hits    <- tbl(db_lymph_well, "hits")
+> val_df %>%
++     select(cs_hit) %>%
++     as.matrix ->
++     y_val
 > 
-> # Function for the annotation
-> merge_fimo_hint_wellington_one_chrom <- function(chrom_str,
-+                                                  fimo_tbl,
-+                                                  hint_regions_tbl,
-+                                                  hint_hits_tbl,
-+                                                  well_regions_tbl,
-+                                                  well_hits_tbl
-+                                                  ) {
+> test_df %>%
++     select(-cs_hit) %>%
++     as.matrix ->
++     X_test
+> 
+> test_df %>%
++     select(cs_hit) %>%
++     as.matrix ->
++     y_test
+> 
+> train_df %>%
++     select(-cs_hit) %>%
++     as.matrix ->
++     X_train
+> 
+> train_df %>%
++     select(cs_hit) %>%
++     as.matrix ->
++     y_train
+> 
+> remove(val_df, test_df, train_df)
+> 
+> # MODEL 1: GBM
+> param <- list("objective" = "binary:logistic",
++               "max.depth" = 7,
++               "eta" = 0.005,
++               "eval.metric" = "auc"
++               )
+> 
+> gbdt_medium <- xgboost(
++             params = param,
++             data = X_train,
++             label = y_train,
++             nround = 200,
++             verbose = FALSE,
++             missing = NA
++         )
+> 
+> gbdt_medium$Model.Name <- "trees with classes"
+> xgb.save(gbdt_medium, "../saved_models/xgboost_TF_site_predict_motif_only.10M.filtered.model")
+[1] TRUE
+> 
+> # Create importance matrix plot
+> motif.class$class <- lapply(motif.class$class, make.names, unique=TRUE)
+> importance_matrix <- xgb.importance(colnames(X_train),model=gbdt_medium)
+> df <- as_data_frame(importance_matrix)
+> df.tf <- subset(df, Feature %in% unique(motif.class$class))
+> df.notf <- subset(df, !(Feature %in% unique(motif.class$class)))
+> tfclass.row <- c("TF_class", unname(as.list(colSums(df.tf[!(colnames(df.tf) %in% c("Feature"))]))) )
+> names(tfclass.row) <- colnames(df)
+> df.sum <- rbind(df.notf,tfclass.row)
+> 
+> 
+> png("../figures/motifOnlyImpMatrix.filtered.png")
+> ggplot(data=df.sum, aes(x=reorder(Feature, Gain), y=Gain)) +
++     geom_bar(stat="identity") +
++     coord_flip() +
++     theme_minimal(base_size = 30) +
++     labs(x = "Feature", y="Gain")
+> dev.off()
+null device 
+          1 
+> 
+> # Create stats for GBM
+> medium_pred_df <- make.pred.df.from.model(gbdt_medium, X_test, y_test)
+> colnames(medium_pred_df)[1] <- "ChIPseq.bound"
+> medium_stat_df <- make.stats.df.from.preds(medium_pred_df)
+> 
+> 
+> # MODEL 2: Full Linear Model
+> X_train_lin <- X_train
+> y_train_lin <- y_train
+> X_test_lin  <- X_test
+> y_test_lin  <- y_test
+> 
+> tf.regressors <- colnames(X_train_lin)[colnames(X_train_lin) %in% unique(motif.class$class)]
+> non.tf.regressors <-  colnames(X_train_lin)[!colnames(X_train_lin) %in% unique(motif.class$class)]
+> 
+> tf.regressors.formula <- paste("as.factor(", paste(tf.regressors, collapse=") + as.factor("), ")")
+> non.tf.regressors.formula <- paste(non.tf.regressors, collapse=" + ")
+> all.regressors.formula <- paste(non.tf.regressors.formula, tf.regressors.formula, sep=" + ")
+> 
+> glm.formula <- paste("ChIPseq.bound ~ ", all.regressors.formula, sep='')
+> 
+> glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
+> glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
+> 
+> glm.all <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
+> glm.all$Model.Name <- "glm small"
+> 
+> # Create stats for Full Linear Model
+> glm.pred.df <- make.pred.df.from.glm(glm.all, glm.df.test)
+Warning message:
+In predict.lm(object, newdata, se.fit, scale = 1, type = ifelse(type ==  :
+  prediction from a rank-deficient fit may be misleading
+> glm.stat.df <- make.stats.df.from.preds(glm.pred.df)
+> 
+> 
+> # MODEL 3: Individual Linear Models
+> stats.regressors.df <- data.frame()
+> 
+> for (this.regressor in colnames(X_train_lin)) {
 + 
-+     # some tables use chr22 and some just use 22
-+     chrom_long_str = paste("chr",chrom_str, sep="")
++     if (this.regressor %in% unique(motif.class$class)) {
++         glm.formula <- paste("ChIPseq.bound ~ ", "as.factor(", this.regressor, ")",sep='')
++     } else {
++         glm.formula <- paste("ChIPseq.bound ~ ", this.regressor,sep='')
++     }
 + 
-+     # select one chromosome from my data table
-+     fimo_tbl %>%
-+         filter(chrom==chrom_str) %>%
-+         select(-empty) ->
-+         chrom_all_tf_df
++     glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
++     glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
 + 
-+     # select one chromosome from hint
-+     hint_regions_tbl %>%
-+         filter(chrom==chrom_long_str) %>%
-+         left_join(hint_hits_tbl, by="loc") %>%
-+         as.data.frame %>%
-+         as.tbl %>%
-+         select(start, endpos, strand, name, score1) %>%
-+         rename("score1"="h_score") ->
-+         chrom_hint_all_tbl
++     # Make the model
++     glm.single <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
++     glm.single$Model.Name <- paste("glm ", this.regressor, sep='')
 + 
-+     # select one chromosome from wellington
-+     well_regions_tbl %>%
-+         filter(chrom==chrom_long_str) %>%
-+         left_join(well_hits_tbl, by="loc") %>%
-+         as.data.frame %>%
-+         as.tbl %>%
-+         select(start, endpos, strand, name, score1) %>%
-+         rename("score1"="w_score") ->
-+         chrom_well_all_tbl
++     # Create the stats
++     glm.pred.single.df <- make.pred.df.from.glm(glm.single, glm.df.test)
++     glm.stat.single.df <- make.stats.df.from.preds(glm.pred.single.df)
 + 
-+     # keep only max hint score but count total nontrivial scores
-+     chrom_hint_all_tbl %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(h_count = n()) %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(h_max_score = max(h_score)) %>%
-+         distinct(start, endpos, name, strand, .keep_all = TRUE) %>%
-+         select(-h_score) ->
-+         chrom_hint_unique_tbl
-+ 
-+     # keep only min wellington score but count total nontrivial scores
-+     chrom_well_all_tbl %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(w_count = n()) %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(w_min_score = min(w_score)) %>%
-+         distinct(start, endpos, name, strand, .keep_all = TRUE) %>%
-+         select(-w_score) ->
-+         chrom_well_unique_tbl
-+     
-+     # merge hint and wellington into my table
-+     chrom_all_tf_df %>%
-+         left_join(chrom_hint_unique_tbl, by=c("start", "endpos", "strand", "motifname"="name")) %>%
-+         left_join(chrom_well_unique_tbl, by=c("start", "endpos", "strand", "motifname"="name")) %>%
-+         replace_na(list(h_count=0, w_count=0, h_max_score=0, w_min_score=0)) ->
-+         chrom_all_tf_df_merged
-+     
-+     return(chrom_all_tf_df_merged)
++     stats.regressors.df <- rbind(stats.regressors.df, glm.stat.single.df)
 + 
 + }
 > 
-> # Run the big function using multicore process
-> # I added X and Y here too
-> chromosomes <- as.character(c(1:22, "X","Y"))
+> stats.regressors.df %>%
++     filter(Model.Name %in% c("glm motifscore",
++                              "glm gc_content",
++                              "glm asinh_tss_dist")) ->
++     stats.regressors.filtered.df
 > 
-> library(BiocParallel)
-> register(MulticoreParam(workers = 25, stop.on.error = FALSE, log = TRUE), default = TRUE)
+> # Compare performance using 3 figures:
+> all.stats.df <- rbind(
++     medium_stat_df,
++     glm.stat.df,
++     stats.regressors.filtered.df
++     )
 > 
-> all.TF.df.fimo.hint.well <- bplapply(chromosomes, merge_fimo_hint_wellington_one_chrom,
-+                    fimo_tbl = all.TF.df,
-+                    hint_regions_tbl = hint_regions,
-+                    hint_hits_tbl = hint_hits,
-+                    well_regions_tbl = well_regions,
-+                    well_hits_tbl = well_hits)
-Error in serialize(data, node$con, xdr = FALSE) : 
-  error writing to connection
-Calls: bplapply ... .send_EXEC -> <Anonymous> -> sendData.SOCK0node -> serialize
-Execution halted
-############### LOG OUTPUT ###############
-Task: 1
-Node: 1
-Timestamp: 2017-10-30 14:30:40
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  5.948   1.940   7.884 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215007926 11482.7  270522564 14447.5  215942979 11532.6
-Vcells 4858916686 37070.6 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 07:03:54] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 2
-Node: 2
-Timestamp: 2017-10-30 14:33:09
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  5.976   1.924   7.903 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008681 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858918650 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 07:20:27] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 3
-Node: 3
-Timestamp: 2017-10-30 14:34:51
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.932   0.972   5.901 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008694 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858918705 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 07:35:22] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 4
-Node: 4
-Timestamp: 2017-10-30 14:36:36
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  5.444  50.372  55.820 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008707 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858918760 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 07:57:05] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 5
-Node: 5
-Timestamp: 2017-10-30 14:38:38
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  5.188   3.660   8.847 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008720 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858918815 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 08:16:35] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 6
-Node: 6
-Timestamp: 2017-10-30 14:40:17
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.984  50.080  55.062 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008733 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858918870 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 08:38:21] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 7
-Node: 7
-Timestamp: 2017-10-30 14:41:56
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.744   1.436   6.206 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008746 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858918925 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 08:54:26] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 8
-Node: 8
-Timestamp: 2017-10-30 14:43:34
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.660   2.240   6.902 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008759 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858918980 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 09:17:29] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 9
-Node: 9
-Timestamp: 2017-10-30 14:45:14
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.200   1.080   5.282 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008772 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919035 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 09:34:01] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 10
-Node: 10
-Timestamp: 2017-10-30 14:46:53
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.984  54.656  59.639 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008785 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919090 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 09:57:49] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 11
-Node: 11
-Timestamp: 2017-10-30 14:48:31
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  5.020  56.740  61.772 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008798 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919145 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 10:21:41] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 12
-Node: 12
-Timestamp: 2017-10-30 14:50:10
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.788  51.988  56.778 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008811 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919200 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 10:45:18] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 13
-Node: 13
-Timestamp: 2017-10-30 14:51:50
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.024  82.184  86.215 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008824 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919255 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 11:15:45] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 14
-Node: 14
-Timestamp: 2017-10-30 14:53:30
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.228  74.452  78.688 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008837 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919310 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 11:38:32] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 15
-Node: 15
-Timestamp: 2017-10-30 14:55:09
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.696  43.292  49.390 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008850 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919365 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 12:08:01] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 16
-Node: 16
-Timestamp: 2017-10-30 14:56:48
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.760   3.484   8.275 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008863 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919420 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 12:29:21] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 17
-Node: 17
-Timestamp: 2017-10-30 14:58:30
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.348   1.496   5.862 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008876 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919475 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 12:48:29] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 18
-Node: 18
-Timestamp: 2017-10-30 15:00:11
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  3.716   0.796   4.514 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008889 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919530 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 13:04:08] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 19
-Node: 19
-Timestamp: 2017-10-30 15:01:52
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  3.676   0.708   4.384 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008902 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919585 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 13:19:17] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 20
-Node: 20
-Timestamp: 2017-10-30 15:03:32
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  3.668   1.860   5.528 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008915 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919640 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 13:33:00] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 21
-Node: 21
-Timestamp: 2017-10-30 15:05:13
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  3.216   0.620   3.833 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008928 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919695 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 13:48:35] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 22
-Node: 22
-Timestamp: 2017-10-30 15:06:54
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  3.320   0.692   4.012 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008941 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919750 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 14:03:47] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 23
-Node: 23
-Timestamp: 2017-10-30 15:08:34
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  4.340   2.320   6.661 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008954 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919805 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 14:17:17] expired PostgreSQLConnection
-
-stderr and stdout:
-
-############### LOG OUTPUT ###############
-Task: 24
-Node: 24
-Timestamp: 2017-10-30 15:10:14
-Success: FALSE
-Task duration:
-   user  system elapsed 
-  2.944   0.512   3.454 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  215008967 11482.8  324667076 17339.1  215942979 11532.6
-Vcells 4858919860 37070.7 8131635382 62039.5 4859950627 37078.5
-Log messages:ERROR [2017-10-30 14:33:13] expired PostgreSQLConnection
-
-stderr and stdout:
-
-Error: BiocParallel errors
-  element index: 1, 2, 3, 4, 5, 6, ...
-  first error: expired PostgreSQLConnection
-Execution halted
+> # Save the "all.stats.df" for later
+> save(all.stats.df, file = "/ssd/mrichard/data/motifOnlyAllStats.10M.filtered.Rdata")
+> 
+> # MCC curves
+> png("../figures/motifOnlyMCC.filtered.png")
+> plot.mattcc.curve(all.stats.df) + theme_minimal(base_size = 15)
+> dev.off()
+null device 
+          1 
+> 
+> 
+> # ROC curves
+> png("../figures/motifOnlyROC.filtered.png")
+> plot.roc.curve(all.stats.df) + theme_minimal(base_size = 15)
+> dev.off()
+null device 
+          1 
+> 
+> 
+> # Precision-Recall curves
+> png("../figures/motifOnlyPreRec.filtered.png")
+> plot.precrecall.curve(all.stats.df) + theme_minimal(base_size = 15)
+Warning message:
+Removed 48 rows containing missing values (geom_path). 
+> dev.off()
+null device 
+          1 
+> 

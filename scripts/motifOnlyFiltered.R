@@ -37,8 +37,8 @@ colnames(all.TF.df.fimo.hint.well.annotated) <- make.names(colnames(all.TF.df.fi
 
 # Filter the entries w/o fp or hits
 all.TF.df.fimo.hint.well.annotated %>%
-    filter(h_frac_16 > 0 | w_frac_16 > 0 | h_frac_20 > 0 | w_frac_20 > 0 | cs_hit > 0) ->
-        df_only_footprint_hits
+    filter(h_max_score_16 > 3.6 | h_max_score_20 > 3.6 | w_min_score_16 < -2.3 | w_min_score_20 < -2.3) ->
+    df_only_footprint_hits
 
 
 # Remove columns we don't need for this part, then drop the original data
@@ -114,7 +114,7 @@ gbdt_medium <- xgboost(
         )
 
 gbdt_medium$Model.Name <- "trees with classes"
-xgb.save(gbdt_medium, "../saved_models/xgboost_TF_site_predict_motif_only.10M.model")
+xgb.save(gbdt_medium, "../saved_models/xgboost_TF_site_predict_motif_only.10M.filtered.model")
 
 # Create importance matrix plot
 motif.class$class <- lapply(motif.class$class, make.names, unique=TRUE)
@@ -127,7 +127,7 @@ names(tfclass.row) <- colnames(df)
 df.sum <- rbind(df.notf,tfclass.row)
 
 
-png("../figures/motifOnlyImpMatrix.png")
+png("../figures/motifOnlyImpMatrix.filtered.png")
 ggplot(data=df.sum, aes(x=reorder(Feature, Gain), y=Gain)) +
     geom_bar(stat="identity") +
     coord_flip() +
@@ -207,21 +207,21 @@ all.stats.df <- rbind(
     )
 
 # Save the "all.stats.df" for later
-save(all.stats.df, file = "/ssd/mrichard/data/motifOnlyAllStats.10M.Rdata")
+save(all.stats.df, file = "/ssd/mrichard/data/motifOnlyAllStats.10M.filtered.Rdata")
 
 # MCC curves
-png("../figures/motifOnlyMCC.png")
+png("../figures/motifOnlyMCC.filtered.png")
 plot.mattcc.curve(all.stats.df) + theme_minimal(base_size = 15)
 dev.off()
 
 
 # ROC curves
-png("../figures/motifOnlyROC.png")
+png("../figures/motifOnlyROC.filtered.png")
 plot.roc.curve(all.stats.df) + theme_minimal(base_size = 15)
 dev.off()
 
 
 # Precision-Recall curves
-png("../figures/motifOnlyPreRec.png")
+png("../figures/motifOnlyPreRec.filtered.png")
 plot.precrecall.curve(all.stats.df) + theme_minimal(base_size = 15)
 dev.off()
