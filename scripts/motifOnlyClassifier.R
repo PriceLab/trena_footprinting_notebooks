@@ -1,5 +1,4 @@
 # Load all libraries and functions
-
 libs <- c(
     'RColorBrewer',
     'ggplot2',
@@ -11,7 +10,8 @@ libs <- c(
     'ROCR',
     'stringr',
     'caret',
-    'caTools'
+    'caTools',
+    'fst'
 )
 
 for (lib in libs) {
@@ -30,28 +30,38 @@ source("/ssd/mrichard/github/BDDS/footprints/testdb/src/dbFunctions.R")
 
 # Load the motif data and the big dataset, plus make the names better
 load("../Rdata_files/motif_class_pairs.Rdata")
-load("/ssd/mrichard/data/joined.motifs.only.9.Rdata") # Takes ~2 min to load
-colnames(motifs.only) <- make.names(colnames(motifs.only), unique=TRUE)
+#load("/ssd/mrichard/data/joined.annotated.9.Rdata") # Takes ~2 min to load
+all.TF.df.fimo.hint.well.annotated <- read.fst("/ssd/mrichard/data/joined.annotated.ALL.Rdata")
+colnames(all.TF.df.fimo.hint.well.annotated) <- make.names(colnames(all.TF.df.fimo.hint.well.annotated), unique=TRUE)
+
+# Filter the entries w/o fp or hits
+#all.TF.df.fimo.hint.well.annotated %>%
+#    filter(h_frac_16 > 0 | w_frac_16 > 0 | h_frac_20 > 0 | w_frac_20 > 0 | cs_hit > 0) ->
+#        df_only_footprint_hits
+df_only_footprint_hits <- all.TF.df.fimo.hint.well.annotated
 
 # Remove columns we don't need for this part, then drop the original data
-cols_to_drop <- c('motifname', 'chrom', 'strand', 'loc')
+# Include the HINT/Wellington columns
+cols_to_drop <- c('motifname', 'chrom', 'strand', 'loc',
+                  'h_frac_16', 'h_frac_20', 'h_max_score_16', 'h_max_score_20',
+                  'w_frac_16', 'w_frac_20', 'w_min_score_16', 'w_min_score_20')
 
-motifs.only %>%
+df_only_footprint_hits %>%
     filter(chrom %in% c("2","4")) %>%
     select(-one_of(cols_to_drop)) ->
     val_df
 
-motifs.only %>%
+df_only_footprint_hits %>%
     filter(chrom %in% c("1","3","5")) %>%
     select(-one_of(cols_to_drop)) ->
     test_df
 
-motifs.only %>%
+df_only_footprint_hits %>%
     filter(!(chrom %in% c("1","2","3","4","5"))) %>%
     select(-one_of(cols_to_drop)) ->
     train_df
 
-remove(motifs.only)
+remove(df_only_footprint_hits, all.TF.df.fimo.hint.well.annotated)
 
 # Divide into train/test/validation sets and split X/Y
 val_df %>%
@@ -103,7 +113,7 @@ gbdt_medium <- xgboost(
         )
 
 gbdt_medium$Model.Name <- "trees with classes"
-xgb.save(gbdt_medium, "../saved_models/xgboost_TF_site_predict_motif_only.model")
+xgb.save(gbdt_medium, "../saved_models/xgboost_TF_site_predict_motif_only.ALL.model")
 
 # Create importance matrix plot
 motif.class$class <- lapply(motif.class$class, make.names, unique=TRUE)
@@ -116,7 +126,7 @@ names(tfclass.row) <- colnames(df)
 df.sum <- rbind(df.notf,tfclass.row)
 
 
-png("../figures/motifOnlyImpMatrix.png")
+png("../figures/motifOnlyImpMatrix.ALL.png")
 ggplot(data=df.sum, aes(x=reorder(Feature, Gain), y=Gain)) +
     geom_bar(stat="identity") +
     coord_flip() +
@@ -196,21 +206,19 @@ all.stats.df <- rbind(
     )
 
 # Save the "all.stats.df" for later
-save(all.stats.df, file = "/ssd/mrichard/data/motifOnlyAllStats.Rdata")
+save(all.stats.df, file = "/ssd/mrichard/data/motifOnlyAllStats.ALL.Rdata")
 
 # MCC curves
-png("../figures/motifOnlyMCC.png")
+png("../figures/motifOnlyMCC.ALL.png")
 plot.mattcc.curve(all.stats.df) + theme_minimal(base_size = 15)
 dev.off()
 
-
 # ROC curves
-png("../figures/motifOnlyROC.png")
+png("../figures/motifOnlyROC.ALL.png")
 plot.roc.curve(all.stats.df) + theme_minimal(base_size = 15)
 dev.off()
 
-
 # Precision-Recall curves
-png("../figures/motifOnlyPreRec.png")
+png("../figures/motifOnlyPreRec.ALL.png")
 plot.precrecall.curve(all.stats.df) + theme_minimal(base_size = 15)
 dev.off()

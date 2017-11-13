@@ -75,7 +75,6 @@ create.TF.df <- function(TF, verbose = FALSE){
     all.fimo.examples.TF.df <- as.tbl(rbind(positive.fimo.examples.TF.df,negative.fimo.examples.TF.df))
 
     return(all.fimo.examples.TF.df)
-
 }
 
 # Run it in parallel
@@ -84,7 +83,7 @@ N.TF <- length(sorted.TF.names)
 
 register(MulticoreParam(workers = 30, stop.on.error = FALSE, log = TRUE), default = TRUE)
 system.time(all.TF.df <- bplapply(sorted.TF.names, create.TF.df, verbose = TRUE))
-all.TF.df <- bind_rows(all.TF.df)
+all.TF.df <- bind_rows(all.TF.df) %>% distinct() # Add the distinct() to remove redundant rows
 
 # Save it
 fname=paste0("/scratch/data/all.TF.fimo.samples.ratio.ALL.df.RData")
