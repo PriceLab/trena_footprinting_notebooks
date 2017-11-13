@@ -4,9 +4,9 @@ library(GenomicRanges)
 library(doParallel)
 library(dbplyr)
 library(BiocParallel)
+library(fst)
 
-
-source("../../BDDS/footprints/testdb/src/dbFunctions.R")
+source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
 
 # Load the chipseq data locally
 load("../Rdata_files/chipSeqData.Rdata")
@@ -42,9 +42,9 @@ create.TF.df <- function(TF, verbose = FALSE){
     # need branch since %in% conversion to SQL doesn't work on length == 1
     ## Basically: we find all instances of the TF's motif(s) in FIMO
     if (length(TFs.to.motifs[[TF]]) > 1 ) {
-        fimo.motifs.for.TF <- as.tbl(as.data.frame(filter(tbl.fimo.dplyr, motifname %in% TFs.to.motifs[[TF]])))
+        fimo.motifs.for.TF <- as_tibble(filter(tbl.fimo.dplyr, motifname %in% TFs.to.motifs[[TF]]))
     } else {
-        fimo.motifs.for.TF <- as.tbl(as.data.frame(filter(tbl.fimo.dplyr, motifname  ==  TFs.to.motifs[[TF]])))          
+        fimo.motifs.for.TF <- as_tibble(filter(tbl.fimo.dplyr, motifname  ==  TFs.to.motifs[[TF]]))
     }
     # Print if requested
     if (verbose == TRUE) {
@@ -57,6 +57,7 @@ create.TF.df <- function(TF, verbose = FALSE){
 
     # find intersect using fast genomic ranges data structure
     # We make GR objects for the fimo motifs we just found and for the chipseq regions, then find their overlaps
+#    browser()
     gr.fimo.TF <- with(fimo.motifs.for.TF, GRanges(chrom, IRanges(start=start, end=endpos)))
     gr.chipseq.TF <- with(chipseq.regions.TF, GRanges(chrom, IRanges(start=start, end=endpos)))
     overlaps.gr.TF <- findOverlaps(gr.chipseq.TF, gr.fimo.TF, type="any")
@@ -75,20 +76,25 @@ create.TF.df <- function(TF, verbose = FALSE){
     all.fimo.examples.TF.df <- as.tbl(rbind(positive.fimo.examples.TF.df,negative.fimo.examples.TF.df))
 
     return(all.fimo.examples.TF.df)
-
 }
 
 # Run it in parallel
 sorted.TF.names <- sort(names(TFs.to.motifs))
 N.TF <- length(sorted.TF.names)
 
-register(MulticoreParam(workers = 30, stop.on.error = FALSE, log = TRUE), default = TRUE)
-system.time(all.TF.df <- bplapply(sorted.TF.names, create.TF.df, verbose = TRUE))
+register(MulticoreParam(workers = 62, stop.on.error = FALSE, log = TRUE), default = TRUE)
+all.TF.df <- bplapply(sorted.TF.names, create.TF.df, verbose = TRUE)
 all.TF.df <- bind_rows(all.TF.df)
 
-# Save it
-fname=paste0("/scratch/data/all.TF.fimo.samples.ratio.ALL.df.RData")
-save(all.TF.df, file=fname)
+# Save it before filtering
+fname <- "/scratch/data/all.TF.fimo.samples.ratio.ALL.df.fst"
+write.fst(all.TF.df, path = fname)
 
-# Inspect it
-str(all.TF.df)
+# Filter using distinct
+unique.all.TF.df <- all.TF.df %>% distinct()
+fname <- "/scratch/data/all.TF.fimo.samples.ratio.UNIQUE.df.fst"
+write.fst(unique.all.TF.df, path = fname)
+
+# Inspect the number of unique motifs in each
+length(unique(all.TF.df$motifname))
+length(unique(unique.all.TF.df$motifname))
