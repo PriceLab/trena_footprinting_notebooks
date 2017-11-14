@@ -17,2920 +17,6 @@ Type 'demo()' for some demos, 'help()' for on-line help, or
 'help.start()' for an HTML browser interface to help.
 Type 'q()' to quit R.
 
-> library(RPostgreSQL)
-Loading required package: DBI
-> library(dplyr)
-
-Attaching package: ‘dplyr’
-
-The following objects are masked from ‘package:stats’:
-
-    filter, lag
-
-The following objects are masked from ‘package:base’:
-
-    intersect, setdiff, setequal, union
-
-> library(GenomicRanges)
-Loading required package: stats4
-Loading required package: BiocGenerics
-Loading required package: parallel
-
-Attaching package: ‘BiocGenerics’
-
-The following objects are masked from ‘package:parallel’:
-
-    clusterApply, clusterApplyLB, clusterCall, clusterEvalQ,
-    clusterExport, clusterMap, parApply, parCapply, parLapply,
-    parLapplyLB, parRapply, parSapply, parSapplyLB
-
-The following objects are masked from ‘package:dplyr’:
-
-    combine, intersect, setdiff, union
-
-The following objects are masked from ‘package:stats’:
-
-    IQR, mad, sd, var, xtabs
-
-The following objects are masked from ‘package:base’:
-
-    anyDuplicated, append, as.data.frame, cbind, colMeans, colnames,
-    colSums, do.call, duplicated, eval, evalq, Filter, Find, get, grep,
-    grepl, intersect, is.unsorted, lapply, lengths, Map, mapply, match,
-    mget, order, paste, pmax, pmax.int, pmin, pmin.int, Position, rank,
-    rbind, Reduce, rowMeans, rownames, rowSums, sapply, setdiff, sort,
-    table, tapply, union, unique, unsplit, which, which.max, which.min
-
-Loading required package: S4Vectors
-
-Attaching package: ‘S4Vectors’
-
-The following objects are masked from ‘package:dplyr’:
-
-    first, rename
-
-The following object is masked from ‘package:base’:
-
-    expand.grid
-
-Loading required package: IRanges
-
-Attaching package: ‘IRanges’
-
-The following objects are masked from ‘package:dplyr’:
-
-    collapse, desc, slice
-
-Loading required package: GenomeInfoDb
-> library(doParallel)
-Loading required package: foreach
-Loading required package: iterators
-> library(dbplyr)
-
-Attaching package: ‘dbplyr’
-
-The following objects are masked from ‘package:dplyr’:
-
-    ident, sql
-
-> library(BiocParallel)
-> library(fst)
-> 
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
-> 
-> # Load the chipseq data locally
-> load("../Rdata_files/chipSeqData.Rdata")
-> 
-> # Load the TF-Motif mapping data
-> load("../Rdata_files/Tfmotifmap.Rdata")
-> 
-> # Grab all motifs for the TFs we have
-> allmots <- c()
-> 
-> for (TFname in names(TFs.to.motifs)) {
-+     allmots  <-  c(allmots, TFs.to.motifs[[TFname]])
-+ }
-> length(unique(allmots))
-[1] 264
-> 
-> # Define the function to pull motifs for a TF
-> create.TF.df <- function(TF, verbose = FALSE){
-+ 
-+     # Make the database connection
-+     db.fimo.dplyr <- src_postgres(drv = dbDriver("PostgreSQL"),
-+                                   user = "trena",
-+                                   password = "trena",
-+                                   dbname = "fimo",
-+                                   host = "localhost")
-+     tbl.fimo.dplyr <- tbl(db.fimo.dplyr, "fimo_hg38")
-+ 
-+     # Grab all hits for a TF, then grab the regions of those hits
-+     chipseq.hits.TF <- subset(chipseq.hits, name == TF)
-+     locs.TF <- chipseq.hits.TF$loc
-+     chipseq.regions.TF <- subset(chipseq.regions, loc %in% locs.TF)
-+ 
-+     # this is the slow step -- doing SQL queries on tbl.fimo.dplyr = call to whole fimo database
-+     # need branch since %in% conversion to SQL doesn't work on length == 1
-+     ## Basically: we find all instances of the TF's motif(s) in FIMO
-+     if (length(TFs.to.motifs[[TF]]) > 1 ) {
-+         fimo.motifs.for.TF <- as_tibble(filter(tbl.fimo.dplyr, motifname %in% TFs.to.motifs[[TF]]))
-+     } else {
-+         fimo.motifs.for.TF <- as_tibble(filter(tbl.fimo.dplyr, motifname  ==  TFs.to.motifs[[TF]]))
-+     }
-+     # Print if requested
-+     if (verbose == TRUE) {
-+         if (length(TFs.to.motifs[[TF]])==1) {
-+             message(paste(TF, "- querying fimo database for", length(TFs.to.motifs[[TF]]), "motif"))
-+         } else {
-+             message(paste(TF, "- querying fimo database for", length(TFs.to.motifs[[TF]]), "motifs"))
-+         }
-+     }
-+ 
-+     # find intersect using fast genomic ranges data structure
-+     # We make GR objects for the fimo motifs we just found and for the chipseq regions, then find their overlaps
-+ #    browser()
-+     gr.fimo.TF <- with(fimo.motifs.for.TF, GRanges(chrom, IRanges(start=start, end=endpos)))
-+     gr.chipseq.TF <- with(chipseq.regions.TF, GRanges(chrom, IRanges(start=start, end=endpos)))
-+     overlaps.gr.TF <- findOverlaps(gr.chipseq.TF, gr.fimo.TF, type="any")
-+     overlaps.TF <- as.tbl(as.data.frame(overlaps.gr.TF))
-+ 
-+     # row numbers in fimo.motifs.for.TF where motifs overlap with chipseq peaks
-+     positive.fimo.examples.rows.TF <- unique(overlaps.TF$subjectHits)
-+     positive.fimo.examples.TF.df <- fimo.motifs.for.TF[positive.fimo.examples.rows.TF,]
-+ 
-+     # Simply take the other rows as the negative fimo examples
-+     negative.fimo.examples.TF.df <- dplyr::setdiff(fimo.motifs.for.TF, positive.fimo.examples.TF.df)    
-+         
-+     # annotate and collect all samples
-+     positive.fimo.examples.TF.df <- as.tbl(cbind(positive.fimo.examples.TF.df, "cs_hit"=1))
-+     negative.fimo.examples.TF.df <- as.tbl(cbind(negative.fimo.examples.TF.df, "cs_hit"=0))
-+     all.fimo.examples.TF.df <- as.tbl(rbind(positive.fimo.examples.TF.df,negative.fimo.examples.TF.df))
-+ 
-+     return(all.fimo.examples.TF.df)
-+ }
-> 
-> # Run it in parallel
-> sorted.TF.names <- sort(names(TFs.to.motifs))
-> N.TF <- length(sorted.TF.names)
-> 
-> register(MulticoreParam(workers = 62, stop.on.error = FALSE, log = TRUE), default = TRUE)
-> all.TF.df <- bplapply(sorted.TF.names, create.TF.df, verbose = TRUE)
-############### LOG OUTPUT ###############
-Task: 60
-Node: 60
-Timestamp: 2017-11-11 19:58:08
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-   3.040    0.804 6297.206 
-Memory used:
-           used  (Mb) gc trigger  (Mb) max used  (Mb)
-Ncells  2361872 126.2    3886542 207.6  3176394 169.7
-Vcells 35284898 269.3   50895334 388.4 35559150 271.3
-Log messages:
-stderr and stdout:
-ZBTB33 - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 7
-Node: 7
-Timestamp: 2017-11-11 19:58:23
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-   2.872    0.640 6313.230 
-Memory used:
-           used  (Mb) gc trigger  (Mb) max used  (Mb)
-Ncells  2362600 126.2    3886542 207.6  3176394 169.7
-Vcells 36494616 278.5   61154400 466.6 36529117 278.7
-Log messages:
-stderr and stdout:
-CHD2 - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 34
-Node: 34
-Timestamp: 2017-11-11 19:58:31
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-   4.404    1.292 6320.077 
-Memory used:
-           used  (Mb) gc trigger  (Mb) max used  (Mb)
-Ncells  2656513 141.9    4703850 251.3  3176394 169.7
-Vcells 40599255 309.8   61154400 466.6 40601353 309.8
-Log messages:
-stderr and stdout:
-NRF1 - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 44
-Node: 44
-Timestamp: 2017-11-11 19:58:38
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-   8.068    1.896 6325.085 
-Memory used:
-           used  (Mb) gc trigger  (Mb) max used  (Mb)
-Ncells  3395591 181.4    5684620 303.6  3401712 181.7
-Vcells 49111815 374.7   73465280 560.5 49638202 378.8
-Log messages:
-stderr and stdout:
-SIX5 - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 45
-Node: 45
-Timestamp: 2017-11-11 19:58:50
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  14.372    2.904 6334.401 
-Memory used:
-           used  (Mb) gc trigger  (Mb) max used  (Mb)
-Ncells  4935053 263.6    6861544 366.5  4941174 263.9
-Vcells 65026859 496.2   88238336 673.3 66077534 504.2
-Log messages:
-stderr and stdout:
-SMC3 - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 38
-Node: 38
-Timestamp: 2017-11-11 19:58:58
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  15.392    4.008 6337.202 
-Memory used:
-           used  (Mb) gc trigger  (Mb) max used  (Mb)
-Ncells  4935072 263.6    8273852 441.9  4941192 263.9
-Vcells 73735557 562.6  105966003 808.5 73737656 562.6
-Log messages:
-stderr and stdout:
-RAD21 - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 8
-Node: 8
-Timestamp: 2017-11-11 19:59:05
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  14.148    2.940 6350.510 
-Memory used:
-           used  (Mb) gc trigger  (Mb) max used  (Mb)
-Ncells  4935091 263.6    8273852 441.9  4941211 263.9
-Vcells 82444255 629.0  127239203 970.8 82446354 629.1
-Log messages:
-stderr and stdout:
-CTCF - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 62
-Node: 62
-Timestamp: 2017-11-11 19:59:13
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  12.536    3.088 6338.897 
-Memory used:
-           used  (Mb) gc trigger   (Mb) max used  (Mb)
-Ncells  5904244 315.4    9968622  532.4  5910364 315.7
-Vcells 95896952 731.7  152767043 1165.6 97996202 747.7
-Log messages:
-stderr and stdout:
-ZNF143 - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 61
-Node: 61
-Timestamp: 2017-11-11 19:59:41
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  15.140    5.440 6385.187 
-Memory used:
-            used  (Mb) gc trigger   (Mb)  max used  (Mb)
-Ncells   7102240 379.4   12002346  641.0   7108360 379.7
-Vcells 112668281 859.6  183400451 1399.3 112670381 859.7
-Log messages:
-stderr and stdout:
-ZEB1 - querying fimo database for 2 motifs
-############### LOG OUTPUT ###############
-Task: 59
-Node: 59
-Timestamp: 2017-11-11 19:59:54
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  18.596    4.596 6388.318 
-Memory used:
-            used  (Mb) gc trigger   (Mb)  max used  (Mb)
-Ncells   8368831 447.0   14442815  771.4   8374951 447.3
-Vcells 130379572 994.8  220160541 1679.7 130381674 994.8
-Log messages:
-stderr and stdout:
-YY1 - querying fimo database for 2 motifs
-############### LOG OUTPUT ###############
-Task: 31
-Node: 31
-Timestamp: 2017-11-11 20:00:04
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  20.312    5.964 6405.605 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  10177853  543.6   17371378  927.8  10183974  543.9
-Vcells 154532692 1179.0  264272649 2016.3 158729098 1211.1
-Log messages:
-stderr and stdout:
-NFYA - querying fimo database for 3 motifs
-############### LOG OUTPUT ###############
-Task: 4
-Node: 4
-Timestamp: 2017-11-11 20:00:14
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  34.632   11.600 6415.309 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  12766733  681.9   20885653 1115.5  12772853  682.2
-Vcells 189546211 1446.2  317207178 2420.1 189548316 1446.2
-Log messages:
-stderr and stdout:
-BCL11A - querying fimo database for 2 motifs
-############### LOG OUTPUT ###############
-Task: 2
-Node: 2
-Timestamp: 2017-11-11 20:00:21
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  14.164    4.504 6418.939 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  13580164  725.3   20885653 1115.5  13586283  725.6
-Vcells 203744586 1554.5  317207178 2420.1 203746690 1554.5
-Log messages:
-stderr and stdout:
-ATF3 - querying fimo database for 3 motifs
-############### LOG OUTPUT ###############
-Task: 6
-Node: 6
-Timestamp: 2017-11-11 20:00:29
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  27.412    9.896 6433.301 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  15581732  832.2   25102783 1340.7  15587851  832.5
-Vcells 232538816 1774.2  380728613 2904.8 232540920 1774.2
-Log messages:
-stderr and stdout:
-CEBPB - querying fimo database for 3 motifs
-############### LOG OUTPUT ###############
-Task: 3
-Node: 3
-Timestamp: 2017-11-11 20:00:36
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  25.624    7.288 6439.934 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  17280999  923.0   25102783 1340.7  17287118  923.3
-Vcells 256669777 1958.3  380728613 2904.8 256671881 1958.3
-Log messages:
-stderr and stdout:
-BATF - querying fimo database for 3 motifs
-############### LOG OUTPUT ###############
-Task: 5
-Node: 5
-Timestamp: 2017-11-11 20:00:43
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  17.816    6.752 6446.099 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  17693969  945.0   30163339 1610.9  17700088  945.3
-Vcells 274157691 2091.7  456954335 3486.3 274159795 2091.7
-Log messages:
-stderr and stdout:
-BHLHE40 - querying fimo database for 5 motifs
-############### LOG OUTPUT ###############
-Task: 10
-Node: 10
-Timestamp: 2017-11-11 20:00:56
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  42.652   15.744 6453.355 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  20737514 1107.6   30163339 1610.9  20743634 1107.9
-Vcells 327929152 2502.0  548425202 4184.2 336319864 2566.0
-Log messages:
-stderr and stdout:
-EBF1 - querying fimo database for 3 motifs
-############### LOG OUTPUT ###############
-Task: 27
-Node: 27
-Timestamp: 2017-11-11 20:01:08
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  44.264   19.320 6446.236 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  23601154 1260.5   36236006 1935.3  23607273 1260.8
-Vcells 374985167 2861.0  548425202 4184.2 374987271 2861.0
-Log messages:
-stderr and stdout:
-NFATC1 - querying fimo database for 3 motifs
-############### LOG OUTPUT ###############
-Task: 15
-Node: 15
-Timestamp: 2017-11-11 20:01:22
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  45.040   21.088 6473.877 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used (Mb)
-Ncells  25983558 1387.7   43523207 2324.4  25989678 1388
-Vcells 421780372 3218.0  658190242 5021.6 421782477 3218
-Log messages:
-stderr and stdout:
-FOS - querying fimo database for 5 motifs
-############### LOG OUTPUT ###############
-Task: 24
-Node: 24
-Timestamp: 2017-11-11 20:01:37
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  47.952   21.468 6483.105 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  30097476 1607.4   43523207 2324.4  30103595 1607.8
-Vcells 477692359 3644.6  789908290 6026.6 477694460 3644.6
-Log messages:
-stderr and stdout:
-MTA3 - querying fimo database for 6 motifs
-############### LOG OUTPUT ###############
-Task: 1
-Node: 1
-Timestamp: 2017-11-11 20:01:54
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  51.328   18.976 6506.593 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  32578015 1739.9   52267848 2791.5  32584135 1740.2
-Vcells 525646352 4010.4  789908290 6026.6 525648457 4010.4
-Log messages:
-stderr and stdout:
-ATF2 - querying fimo database for 8 motifs
-############### LOG OUTPUT ###############
-Task: 9
-Node: 9
-Timestamp: 2017-11-11 20:02:21
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  54.004   21.164 6514.107 
-Memory used:
-            used   (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  36741398 1962.3   62761417 3351.9  36747518 1962.6
-Vcells 600500332 4581.5  947969948 7232.5 617279652 4709.5
-Log messages:
-stderr and stdout:
-E2F4 - querying fimo database for 9 motifs
-############### LOG OUTPUT ###############
-Task: 14
-Node: 14
-Timestamp: 2017-11-11 20:02:45
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  84.188   54.544 6562.849 
-Memory used:
-            used (Mb) gc trigger   (Mb)  max used   (Mb)
-Ncells  43139678 2304   62761417 3351.9  43145797 2304.3
-Vcells 704504874 5375 1137643937 8679.6 704506978 5375.0
-Log messages:
-stderr and stdout:
-ETS1 - querying fimo database for 13 motifs
-############### LOG OUTPUT ###############
-Task: 18
-Node: 18
-Timestamp: 2017-11-11 20:03:26
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 156.104   77.864 6596.114 
-Memory used:
-            used   (Mb) gc trigger    (Mb)  max used   (Mb)
-Ncells  56974570 3042.8   75353700  4024.4  56980689 3043.1
-Vcells 869083810 6630.6 1365252724 10416.1 869085911 6630.6
-Log messages:
-stderr and stdout:
-IRF4 - querying fimo database for 6 motifs
-############### LOG OUTPUT ###############
-Task: 13
-Node: 13
-Timestamp: 2017-11-11 20:03:55
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  77.716   48.192 6597.189 
-Memory used:
-            used   (Mb) gc trigger    (Mb)  max used   (Mb)
-Ncells  61019626 3258.8   90464440  4831.4  61025745 3259.2
-Vcells 958839358 7315.4 1638383268 12499.9 958841462 7315.4
-Log messages:
-stderr and stdout:
-ELK1 - querying fimo database for 23 motifs
-############### LOG OUTPUT ###############
-Task: 17
-Node: 17
-Timestamp: 2017-11-11 20:04:48
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 188.516  101.412 6645.279 
-Memory used:
-             used   (Mb) gc trigger    (Mb)   max used   (Mb)
-Ncells   64062019 3421.3  108597328  5799.8   64068138 3421.7
-Vcells 1111706432 8481.7 1638383268 12499.9 1111708536 8481.7
-Log messages:
-stderr and stdout:
-IRF3 - querying fimo database for 8 motifs
-############### LOG OUTPUT ###############
-Task: 12
-Node: 12
-Timestamp: 2017-11-11 20:05:26
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 143.936   88.040 6675.849 
-Memory used:
-             used   (Mb) gc trigger    (Mb)   max used   (Mb)
-Ncells   64350948 3436.8  108597328  5799.8   64357067 3437.1
-Vcells 1238524738 9449.2 1966139921 15000.5 1238526845 9449.3
-Log messages:
-stderr and stdout:
-ELF1 - querying fimo database for 26 motifs
-############### LOG OUTPUT ###############
-Task: 19
-Node: 19
-Timestamp: 2017-11-11 20:05:59
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  96.252   58.572 6580.340 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells   64448635  3442.0  108597328  5799.8   64454754  3442.3
-Vcells 1322954629 10093.4 1966139921 15000.5 1322956736 10093.4
-Log messages:
-stderr and stdout:
-JUND - querying fimo database for 14 motifs
-############### LOG OUTPUT ###############
-Task: 11
-Node: 11
-Timestamp: 2017-11-11 20:07:12
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 270.480  177.640 6762.721 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells   86105023  4598.6  130356793  6961.9   86111143  4598.9
-Vcells 1679608419 12814.4 2359447905 18001.2 1713164960 13070.5
-Log messages:
-stderr and stdout:
-EGR1 - querying fimo database for 18 motifs
-############### LOG OUTPUT ###############
-Task: 16
-Node: 16
-Timestamp: 2017-11-11 20:08:25
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 313.300  214.476 6829.515 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  110411256  5896.6  156468151  8356.4  110417375  5897.0
-Vcells 2073987992 15823.3 2831417486 21602.1 2073990101 15823.3
-Log messages:
-stderr and stdout:
-FOXM1 - querying fimo database for 24 motifs
-############### LOG OUTPUT ###############
-Task: 20
-Node: 20
-Timestamp: 2017-11-11 20:09:22
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  74.612   47.212 6566.716 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  114450993  6112.4  187801781 10029.7  114457112  6112.7
-Vcells 2162842507 16501.2 3397780983 25923.1 2162844616 16501.2
-Log messages:
-stderr and stdout:
-MAX - querying fimo database for 17 motifs
-############### LOG OUTPUT ###############
-Task: 21
-Node: 21
-Timestamp: 2017-11-11 20:11:02
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 169.348   68.876 6555.735 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  130245230  6955.9  187801781 10029.7  130251350  6956.2
-Vcells 2390737826 18239.9 4077417179 31108.3 2457848799 18751.9
-Log messages:
-stderr and stdout:
-MAZ - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 22
-Node: 22
-Timestamp: 2017-11-11 20:12:00
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 109.380   70.552 6549.369 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  137476293  7342.1  225402137 12037.8  137482412  7342.4
-Vcells 2519101158 19219.3 4077417179 31108.3 2519103266 19219.3
-Log messages:
-stderr and stdout:
-MEF2A - querying fimo database for 6 motifs
-############### LOG OUTPUT ###############
-Task: 23
-Node: 23
-Timestamp: 2017-11-11 20:13:01
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  93.076   60.780 6525.254 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  137476312  7342.1  225402137 12037.8  137482431  7342.4
-Vcells 2607382596 19892.8 4077417179 31108.3 2607384705 19892.8
-Log messages:
-stderr and stdout:
-MEF2C - querying fimo database for 5 motifs
-############### LOG OUTPUT ###############
-Task: 25
-Node: 25
-Timestamp: 2017-11-11 20:13:55
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  64.068   29.640 6537.380 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  137476331  7342.1  225402137 12037.8  137482451  7342.4
-Vcells 2663820954 20323.4 4077417179 31108.3 2663823064 20323.4
-Log messages:
-stderr and stdout:
-MXI1 - querying fimo database for 13 motifs
-############### LOG OUTPUT ###############
-Task: 26
-Node: 26
-Timestamp: 2017-11-11 20:14:48
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  47.364   27.488 6525.943 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  137738809  7356.1  225402137 12037.8  137744929  7356.4
-Vcells 2711022832 20683.5 4077417179 31108.3 2711024942 20683.5
-Log messages:
-stderr and stdout:
-MYC - querying fimo database for 13 motifs
-############### LOG OUTPUT ###############
-Task: 28
-Node: 28
-Timestamp: 2017-11-11 20:15:42
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  66.076   30.024 6514.352 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  141696453  7567.5  225402137 12037.8  141702573  7567.8
-Vcells 2775127858 21172.6 4077417179 31108.3 2775129968 21172.6
-Log messages:
-stderr and stdout:
-NFE2 - querying fimo database for 7 motifs
-############### LOG OUTPUT ###############
-Task: 29
-Node: 29
-Timestamp: 2017-11-11 20:16:34
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  29.772    9.832 6451.053 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  143900479  7685.2  225402137 12037.8  143906598  7685.5
-Vcells 2805586255 21405.0 4077417179 31108.3 2805588364 21405.0
-Log messages:
-stderr and stdout:
-NFIC - querying fimo database for 4 motifs
-############### LOG OUTPUT ###############
-Task: 30
-Node: 30
-Timestamp: 2017-11-11 20:17:28
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  43.524   18.312 6460.352 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  146528554  7825.5  225402137 12037.8  146534674  7825.8
-Vcells 2852549371 21763.3 4077417179 31108.3 2852551481 21763.3
-Log messages:
-stderr and stdout:
-NFKB1 - querying fimo database for 4 motifs
-############### LOG OUTPUT ###############
-Task: 32
-Node: 32
-Timestamp: 2017-11-11 20:18:20
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  20.232    6.172 6423.253 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  146528573  7825.5  225402137 12037.8  146534693  7825.8
-Vcells 2865413849 21861.4 4892980614 37330.5 2865415959 21861.4
-Log messages:
-stderr and stdout:
-NFYB - querying fimo database for 3 motifs
-############### LOG OUTPUT ###############
-Task: 33
-Node: 33
-Timestamp: 2017-11-11 20:19:22
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  88.384   51.544 6547.845 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  153086988  8175.8  225402137 12037.8  153093108  8176.1
-Vcells 2965531119 22625.3 4892980614 37330.5 2965533229 22625.3
-Log messages:
-stderr and stdout:
-NR2C2 - querying fimo database for 9 motifs
-############### LOG OUTPUT ###############
-Task: 35
-Node: 35
-Timestamp: 2017-11-11 20:20:20
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  34.040    9.528 6463.865 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  156286474  8346.6  225402137 12037.8  156292594  8347.0
-Vcells 3001877885 22902.6 4892980614 37330.5 3001879995 22902.6
-Log messages:
-stderr and stdout:
-PAX5 - querying fimo database for 5 motifs
-############### LOG OUTPUT ###############
-Task: 36
-Node: 36
-Timestamp: 2017-11-11 20:21:22
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  58.416   38.772 6516.162 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  158894011  8485.9  270522564 14447.5  158900131  8486.2
-Vcells 3073019102 23445.3 4892980614 37330.5 3073021212 23445.3
-Log messages:
-stderr and stdout:
-PBX3 - querying fimo database for 9 motifs
-############### LOG OUTPUT ###############
-Task: 37
-Node: 37
-Timestamp: 2017-11-11 20:22:45
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 199.012  115.616 6676.991 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  172922624  9235.1  270522564 14447.5  172928744  9235.4
-Vcells 3292758173 25121.8 4892980614 37330.5 3292760283 25121.8
-Log messages:
-stderr and stdout:
-POU2F2 - querying fimo database for 16 motifs
-############### LOG OUTPUT ###############
-Task: 39
-Node: 39
-Timestamp: 2017-11-11 20:23:53
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  32.852   10.432 6409.049 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  176422086  9422.0  270522564 14447.5  176428206  9422.3
-Vcells 3326910162 25382.4 4892980614 37330.5 3326912272 25382.4
-Log messages:
-stderr and stdout:
-REST - querying fimo database for 2 motifs
-############### LOG OUTPUT ###############
-Task: 40
-Node: 40
-Timestamp: 2017-11-11 20:25:02
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  44.080   22.120 6495.223 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  179738257  9599.1  270522564 14447.5  179744377  9599.4
-Vcells 3377460791 25768.0 4892980614 37330.5 3377462901 25768.0
-Log messages:
-stderr and stdout:
-RFX5 - querying fimo database for 7 motifs
-############### LOG OUTPUT ###############
-Task: 41
-Node: 41
-Timestamp: 2017-11-11 20:26:13
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  47.616   16.712 6481.539 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  180887949  9660.5  270522564 14447.5  180894069  9660.8
-Vcells 3421387116 26103.2 4892980614 37330.5 3421389226 26103.2
-Log messages:
-stderr and stdout:
-RUNX3 - querying fimo database for 5 motifs
-############### LOG OUTPUT ###############
-Task: 42
-Node: 42
-Timestamp: 2017-11-11 20:27:33
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 115.116   61.604 6580.314 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  185690502  9917.0  270522564 14447.5  185696622  9917.3
-Vcells 3525478617 26897.3 5871656736 44797.2 3525480727 26897.3
-Log messages:
-stderr and stdout:
-RXRA - querying fimo database for 10 motifs
-############### LOG OUTPUT ###############
-Task: 43
-Node: 43
-Timestamp: 2017-11-11 20:29:00
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 166.368   72.408 6553.879 
-Memory used:
-             used  (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  185690521  9917  270522564 14447.5  185696641  9917.3
-Vcells 3623088246 27642 5871656736 44797.2 3623090356 27642.0
-Log messages:
-stderr and stdout:
-SIN3A - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 46
-Node: 46
-Timestamp: 2017-11-11 20:30:50
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 293.324  187.560 6784.000 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  189648719 10128.4  324667076 17339.1  189654839 10128.7
-Vcells 3889605178 29675.4 5871656736 44797.2 3889607286 29675.4
-Log messages:
-stderr and stdout:
-SP1 - querying fimo database for 18 motifs
-############### LOG OUTPUT ###############
-Task: 47
-Node: 47
-Timestamp: 2017-11-11 20:32:09
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  48.180   19.028 6468.116 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  192860865 10299.9  324667076 17339.1  192866985 10300.3
-Vcells 3938700033 30049.9 5871656736 44797.2 3938702143 30050.0
-Log messages:
-stderr and stdout:
-SPI1 - querying fimo database for 4 motifs
-############### LOG OUTPUT ###############
-Task: 48
-Node: 48
-Timestamp: 2017-11-11 20:33:23
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  24.940    8.036 6410.541 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  195036831 10416.1  324667076 17339.1  195042951 10416.5
-Vcells 3963456870 30238.8 5871656736 44797.2 3963458980 30238.8
-Log messages:
-stderr and stdout:
-SRF - querying fimo database for 3 motifs
-############### LOG OUTPUT ###############
-Task: 49
-Node: 49
-Timestamp: 2017-11-11 20:34:54
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 119.108   77.232 6572.633 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  200999004 10734.6  324667076 17339.1  201005124 10734.9
-Vcells 4092342189 31222.1 5871656736 44797.2 4092344299 31222.2
-Log messages:
-stderr and stdout:
-STAT1 - querying fimo database for 8 motifs
-############### LOG OUTPUT ###############
-Task: 50
-Node: 50
-Timestamp: 2017-11-11 20:36:23
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 119.884   70.936 6569.216 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  202070016 10791.8  324667076 17339.1  202076136 10792.1
-Vcells 4197163093 32021.9 7046068083 53757.3 4197165203 32021.9
-Log messages:
-stderr and stdout:
-STAT3 - querying fimo database for 8 motifs
-############### LOG OUTPUT ###############
-Task: 51
-Node: 51
-Timestamp: 2017-11-11 20:37:50
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  88.708   57.776 6525.852 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  202070035 10791.8  324667076 17339.1  202076155 10792.1
-Vcells 4277012082 32631.1 7046068083 53757.3 4277014192 32631.1
-Log messages:
-stderr and stdout:
-STAT5A - querying fimo database for 6 motifs
-############### LOG OUTPUT ###############
-Task: 52
-Node: 52
-Timestamp: 2017-11-11 20:39:15
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  58.324   24.964 6477.866 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  205200401 10958.9  324667076 17339.1  205206521 10959.3
-Vcells 4333305625 33060.5 7046068083 53757.3 4333307735 33060.6
-Log messages:
-stderr and stdout:
-TAF1 - querying fimo database for 4 motifs
-############### LOG OUTPUT ###############
-Task: 53
-Node: 53
-Timestamp: 2017-11-11 20:40:41
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  82.752   33.760 6436.942 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  205200420 10958.9  324667076 17339.1  205206540 10959.3
-Vcells 4388873494 33484.5 7046068083 53757.3 4388875604 33484.5
-Log messages:
-stderr and stdout:
-TBL1XR1 - querying fimo database for 1 motif
-############### LOG OUTPUT ###############
-Task: 54
-Node: 54
-Timestamp: 2017-11-11 20:42:16
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 110.968   77.528 6570.018 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  212549406 11351.4  324667076 17339.1  212555526 11351.7
-Vcells 4526945916 34537.9 7046068083 53757.3 4526948026 34537.9
-Log messages:
-stderr and stdout:
-TCF12 - querying fimo database for 9 motifs
-############### LOG OUTPUT ###############
-Task: 55
-Node: 55
-Timestamp: 2017-11-11 20:43:52
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 110.776   77.568 6568.122 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  212549425 11351.4  324667076 17339.1  212555545 11351.7
-Vcells 4635646534 35367.2 7046068083 53757.3 4635648644 35367.2
-Log messages:
-stderr and stdout:
-TCF3 - querying fimo database for 9 motifs
-############### LOG OUTPUT ###############
-Task: 56
-Node: 56
-Timestamp: 2017-11-11 20:45:30
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  76.624   51.400 6575.526 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  212832585 11366.5  324667076 17339.1  212838705 11366.9
-Vcells 4716577657 35984.7 7046068083 53757.3 4716579767 35984.7
-Log messages:
-stderr and stdout:
-USF1 - querying fimo database for 19 motifs
-############### LOG OUTPUT ###############
-Task: 57
-Node: 57
-Timestamp: 2017-11-11 20:47:04
-Success: TRUE
-Task duration:
-    user   system  elapsed 
-  71.844   47.472 6564.237 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  212832604 11366.5  324667076 17339.1  212838724 11366.9
-Vcells 4790914815 36551.8 7046068083 53757.3 4790916925 36551.8
-Log messages:
-stderr and stdout:
-USF2 - querying fimo database for 17 motifs
-############### LOG OUTPUT ###############
-Task: 58
-Node: 58
-Timestamp: 2017-11-11 20:48:51
-Success: TRUE
-Task duration:
-    user   system  elapsed 
- 164.592   71.700 6529.906 
-Memory used:
-             used    (Mb) gc trigger    (Mb)   max used    (Mb)
-Ncells  212832623 11366.5  324667076 17339.1  212838743 11366.9
-Vcells 4888524444 37296.5 7046068083 53757.3 4888526554 37296.5
-Log messages:
-stderr and stdout:
-WRNIP1 - querying fimo database for 1 motif
-> all.TF.df <- bind_rows(all.TF.df)
-> 
-> # Save it before filtering
-> fname <- "/scratch/data/all.TF.fimo.samples.ratio.ALL.df.fst"
-> write.fst(all.TF.df, path = fname)
-> 
-> # Filter using distinct
-> unique.all.TF.df <- all.TF.df %>% distinct()
-> fname <- "/scratch/data/all.TF.fimo.samples.ratio.UNIQUE.df.fst"
-> write.fst(unique.all.TF.df, path = fname)
-> 
-> # Inspect the number of unique motifs in each
-> length(unique(all.TF.df$motifname))
-[1] 257
-> length(unique(unique.all.TF.df$motifname))
-[1] 257
-> 
-
-****************************** STEP 1 COMPLETE ****************************
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
-> libs <- c(
-+     'dplyr',
-+     'tidyr',
-+     'stringr',
-+     'ggplot2',
-+     'GenomicRanges',
-+     'RPostgreSQL',
-+     'doMC',
-+     'numbers',
-+     'doParallel',
-+     'fst'
-+ )
-> 
-> for (lib in libs) {
-+     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
-+         install.packages(lib, repos='http://cran.us.r-project.org')
-+     }
-+ }
-
-Attaching package: ‘dplyr’
-
-The following objects are masked from ‘package:stats’:
-
-    filter, lag
-
-The following objects are masked from ‘package:base’:
-
-    intersect, setdiff, setequal, union
-
-
-Attaching package: ‘BiocGenerics’
-
-The following objects are masked from ‘package:parallel’:
-
-    clusterApply, clusterApplyLB, clusterCall, clusterEvalQ,
-    clusterExport, clusterMap, parApply, parCapply, parLapply,
-    parLapplyLB, parRapply, parSapply, parSapplyLB
-
-The following objects are masked from ‘package:dplyr’:
-
-    combine, intersect, setdiff, union
-
-The following objects are masked from ‘package:stats’:
-
-    IQR, mad, sd, var, xtabs
-
-The following objects are masked from ‘package:base’:
-
-    anyDuplicated, append, as.data.frame, cbind, colMeans, colnames,
-    colSums, do.call, duplicated, eval, evalq, Filter, Find, get, grep,
-    grepl, intersect, is.unsorted, lapply, lengths, Map, mapply, match,
-    mget, order, paste, pmax, pmax.int, pmin, pmin.int, Position, rank,
-    rbind, Reduce, rowMeans, rownames, rowSums, sapply, setdiff, sort,
-    table, tapply, union, unique, unsplit, which, which.max, which.min
-
-
-Attaching package: ‘S4Vectors’
-
-The following object is masked from ‘package:tidyr’:
-
-    expand
-
-The following objects are masked from ‘package:dplyr’:
-
-    first, rename
-
-The following object is masked from ‘package:base’:
-
-    expand.grid
-
-
-Attaching package: ‘IRanges’
-
-The following objects are masked from ‘package:dplyr’:
-
-    collapse, desc, slice
-
-> 
-> library(BSgenome.Hsapiens.UCSC.hg38)
-Loading required package: BSgenome
-Loading required package: Biostrings
-Loading required package: XVector
-
-Attaching package: ‘Biostrings’
-
-The following object is masked from ‘package:base’:
-
-    strsplit
-
-Loading required package: rtracklayer
-> hg38 <- BSgenome.Hsapiens.UCSC.hg38
-> 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
-> 
-> # Bring in the huge DF
-> all.TF.df <- read.fst("/scratch/data/unique.10M.df.fst")
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
-> libs <- c(
-+     'dplyr',
-+     'tidyr',
-+     'stringr',
-+     'ggplot2',
-+     'GenomicRanges',
-+     'RPostgreSQL',
-+     'doMC',
-+     'numbers',
-+     'doParallel',
-+     'fst'
-+ )
-> 
-> for (lib in libs) {
-+     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
-+         install.packages(lib, repos='http://cran.us.r-project.org')
-+     }
-+ }
-
-Attaching package: ‘dplyr’
-
-The following objects are masked from ‘package:stats’:
-
-    filter, lag
-
-The following objects are masked from ‘package:base’:
-
-    intersect, setdiff, setequal, union
-
-
-Attaching package: ‘BiocGenerics’
-
-The following objects are masked from ‘package:parallel’:
-
-    clusterApply, clusterApplyLB, clusterCall, clusterEvalQ,
-    clusterExport, clusterMap, parApply, parCapply, parLapply,
-    parLapplyLB, parRapply, parSapply, parSapplyLB
-
-The following objects are masked from ‘package:dplyr’:
-
-    combine, intersect, setdiff, union
-
-The following objects are masked from ‘package:stats’:
-
-    IQR, mad, sd, var, xtabs
-
-The following objects are masked from ‘package:base’:
-
-    anyDuplicated, append, as.data.frame, cbind, colMeans, colnames,
-    colSums, do.call, duplicated, eval, evalq, Filter, Find, get, grep,
-    grepl, intersect, is.unsorted, lapply, lengths, Map, mapply, match,
-    mget, order, paste, pmax, pmax.int, pmin, pmin.int, Position, rank,
-    rbind, Reduce, rowMeans, rownames, rowSums, sapply, setdiff, sort,
-    table, tapply, union, unique, unsplit, which, which.max, which.min
-
-
-Attaching package: ‘S4Vectors’
-
-The following object is masked from ‘package:tidyr’:
-
-    expand
-
-The following objects are masked from ‘package:dplyr’:
-
-    first, rename
-
-The following object is masked from ‘package:base’:
-
-    expand.grid
-
-
-Attaching package: ‘IRanges’
-
-The following objects are masked from ‘package:dplyr’:
-
-    collapse, desc, slice
-
-> 
-> library(BSgenome.Hsapiens.UCSC.hg38)
-Loading required package: BSgenome
-Loading required package: Biostrings
-Loading required package: XVector
-
-Attaching package: ‘Biostrings’
-
-The following object is masked from ‘package:base’:
-
-    strsplit
-
-Loading required package: rtracklayer
-> hg38 <- BSgenome.Hsapiens.UCSC.hg38
-> 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
-> 
-> # Bring in the huge DF
-> all.TF.df <- read.fst("/scratch/data/unique.10M.df.fst")
-> 
-> # Read data from lymphoblast
-> db_lymph_hint <- src_postgres(drv=dbDriver("PostgreSQL"),
-+                               user="trena",
-+                               password="trena",
-+                               dbname = "lymphoblast_hint_20", #Use Seed 20
-+                               host = "localhost")
-> db_lymph_well <- src_postgres(drv=dbDriver("PostgreSQL"),
-+                               user="trena",
-+                               password="trena",
-+                               dbname = "lymphoblast_wellington_20", # Use Seed 20
-+                               host = "localhost")
-> hint_regions <- tbl(db_lymph_hint, "regions")
-> hint_hits    <- tbl(db_lymph_hint, "hits")
-> well_regions <- tbl(db_lymph_well, "regions")
-> well_hits    <- tbl(db_lymph_well, "hits")
-> 
-> # Function for the annotation
-> merge_fimo_hint_wellington_one_chrom <- function(chrom_str,
-+                                                  fimo_tbl,
-+                                                  hint_regions_tbl,
-+                                                  hint_hits_tbl,
-+                                                  well_regions_tbl,
-+                                                  well_hits_tbl
-+                                                  ) {
-+ 
-+     # some tables use chr22 and some just use 22
-+     chrom_long_str = paste("chr",chrom_str, sep="")
-+ 
-+     # select one chromosome from my data table
-+     fimo_tbl %>%
-+         filter(chrom==chrom_str) %>%
-+         select(-empty) ->
-+         chrom_all_tf_df
-+ 
-+     # select one chromosome from hint
-+     hint_regions_tbl %>%
-+         filter(chrom==chrom_long_str) %>%
-+         left_join(hint_hits_tbl, by="loc") %>%
-+         select(start, endpos, strand, name, h_score = score1) %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(h_count = n(), h_max_score = max(h_score)) %>%
-+         select(-h_score) %>%
-+         as_tibble ->
-+         chrom_hint_all_tbl
-+ 
-+     # Grab only distinct ones
-+     chrom_hint_all_tbl %>%
-+         distinct(start, endpos, name, strand, .keep_all = TRUE) ->
-+         chrom_hint_unique_tbl
-+     rm(chrom_hint_all_tbl)
-+ 
-+     # select one chromosome from wellington
-+     well_regions_tbl %>%
-+         filter(chrom==chrom_long_str) %>%
-+         left_join(well_hits_tbl, by="loc") %>%
-+         select(start, endpos, strand, name, w_score = score1) %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(w_count = n(), w_min_score = min(w_score)) %>%
-+         select(-w_score) %>%
-+         as_tibble ->
-+         chrom_well_all_tbl
-+ 
-+     # keep only min wellington score but count total nontrivial scores
-+     chrom_well_all_tbl %>%
-+         distinct(start, endpos, name, strand, .keep_all = TRUE) ->
-+         chrom_well_unique_tbl
-+     rm(chrom_well_all_tbl)
-+     
-+     # merge hint and wellington into my table
-+     chrom_all_tf_df %>%
-+         left_join(chrom_hint_unique_tbl, by=c("start", "endpos", "strand", "motifname"="name")) %>%
-+         left_join(chrom_well_unique_tbl, by=c("start", "endpos", "strand", "motifname"="name")) %>%
-+         replace_na(list(h_count=0, w_count=0, h_max_score=0, w_min_score=0)) ->
-+         chrom_all_tf_df_merged
-+     
-+     return(chrom_all_tf_df_merged)
-+ }
-> 
-> # Run the big function using multicore process; maybe later
-> # I added X and Y here too
-> chromosomes <- as.character(c(1:22, "X","Y"))
-> 
-> #library(BiocParallel)
-> #register(MulticoreParam(workers = 2, stop.on.error = FALSE, log = TRUE), default = TRUE)
-> 
-> #all.TF.df.fimo.hint.well <- bplapply(chromosomes, merge_fimo_hint_wellington_one_chrom,
-> #                   fimo_tbl = all.TF.df,
-> #                   hint_regions_tbl = hint_regions,
-> #                   hint_hits_tbl = hint_hits,
-> #                   well_regions_tbl = well_regions,
-> #                   well_hits_tbl = well_hits)
-> 
-> # Run as a simple for loop
-> 
-> big_list <- list()
-> counter <- 1
-> now.time <- Sys.time()
-> 
-> for (chr_str in chromosomes) {
-+     message(paste("working on chromosome", chr_str))
-+ 
-+     big_list[[counter]] <- merge_fimo_hint_wellington_one_chrom(chr_str,
-+                                                                 all.TF.df,
-+                                                                 hint_regions,
-+                                                                 hint_hits,
-+                                                                 well_regions,
-+                                                                 well_hits)
-+     counter <- counter + 1
-+     message(paste("Time elapsed:", Sys.time() - now.time))
-+ }
-working on chromosome 1
-> 
-> # Read data from lymphoblast
-> db_lymph_hint <- src_postgres(drv=dbDriver("PostgreSQL"),
-+                               user="trena",
-+                               password="trena",
-+                               dbname = "lymphoblast_hint_16", #Use Seed 16
-+                               host = "localhost")
-> db_lymph_well <- src_postgres(drv=dbDriver("PostgreSQL"),
-+                               user="trena",
-+                               password="trena",
-+                               dbname = "lymphoblast_wellington_16", # Use Seed 16
-+                               host = "localhost")
-> hint_regions <- tbl(db_lymph_hint, "regions")
-> hint_hits    <- tbl(db_lymph_hint, "hits")
-> well_regions <- tbl(db_lymph_well, "regions")
-> well_hits    <- tbl(db_lymph_well, "hits")
-> 
-> # Function for the annotation
-> merge_fimo_hint_wellington_one_chrom <- function(chrom_str,
-+                                                  fimo_tbl,
-+                                                  hint_regions_tbl,
-+                                                  hint_hits_tbl,
-+                                                  well_regions_tbl,
-+                                                  well_hits_tbl
-+                                                  ) {
-+ 
-+     # some tables use chr22 and some just use 22
-+     chrom_long_str = paste("chr",chrom_str, sep="")
-+ 
-+     # select one chromosome from my data table
-+     fimo_tbl %>%
-+         filter(chrom==chrom_str) %>%
-+         select(-empty) ->
-+         chrom_all_tf_df
-+ 
-+     # select one chromosome from hint
-+     hint_regions_tbl %>%
-+         filter(chrom==chrom_long_str) %>%
-+         left_join(hint_hits_tbl, by="loc") %>%
-+         select(start, endpos, strand, name, h_score = score1) %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(h_count = n(), h_max_score = max(h_score)) %>%
-+         select(-h_score) %>%
-+         as_tibble ->
-+         chrom_hint_all_tbl
-+ 
-+     # Grab only distinct ones
-+     chrom_hint_all_tbl %>%
-+         distinct(start, endpos, name, strand, .keep_all = TRUE) ->
-+         chrom_hint_unique_tbl
-+     rm(chrom_hint_all_tbl)
-+ 
-+     # select one chromosome from wellington
-+     well_regions_tbl %>%
-+         filter(chrom==chrom_long_str) %>%
-+         left_join(well_hits_tbl, by="loc") %>%
-+         select(start, endpos, strand, name, w_score = score1) %>%
-+         group_by(start, endpos, name, strand) %>%
-+         mutate(w_count = n(), w_min_score = min(w_score)) %>%
-+         select(-w_score) %>%
-+         as_tibble ->
-+         chrom_well_all_tbl
-+ 
-+     # keep only min wellington score but count total nontrivial scores
-+     chrom_well_all_tbl %>%
-+         distinct(start, endpos, name, strand, .keep_all = TRUE) ->
-+         chrom_well_unique_tbl
-+     rm(chrom_well_all_tbl)
-+     
-+     # merge hint and wellington into my table
-+     chrom_all_tf_df %>%
-+         left_join(chrom_hint_unique_tbl, by=c("start", "endpos", "strand", "motifname"="name")) %>%
-+         left_join(chrom_well_unique_tbl, by=c("start", "endpos", "strand", "motifname"="name")) %>%
-+         replace_na(list(h_count=0, w_count=0, h_max_score=0, w_min_score=0)) ->
-+         chrom_all_tf_df_merged
-+     
-+     return(chrom_all_tf_df_merged)
-+ }
-> 
-> # Run the big function using multicore process; maybe later
-> # I added X and Y here too
-> chromosomes <- as.character(c(1:22, "X","Y"))
-> 
-> #library(BiocParallel)
-> #register(MulticoreParam(workers = 25, stop.on.error = FALSE, log = TRUE), default = TRUE)
-> 
-> #all.TF.df.fimo.hint.well <- bplapply(chromosomes, merge_fimo_hint_wellington_one_chrom,
-> #                   fimo_tbl = all.TF.df,
-> #                   hint_regions_tbl = hint_regions,
-> #                   hint_hits_tbl = hint_hits,
-> #                   well_regions_tbl = well_regions,
-> #                   well_hits_tbl = well_hits)
-> 
-> # Run as a simple for loop
-> 
-> big_list <- list()
-> counter <- 1
-> now.time <- Sys.time()
-> 
-> for (chr_str in chromosomes) {
-+     message(paste("working on chromosome", chr_str))
-+ 
-+     big_list[[counter]] <- merge_fimo_hint_wellington_one_chrom(chr_str,
-+                                                                 all.TF.df,
-+                                                                 hint_regions,
-+                                                                 hint_hits,
-+                                                                 well_regions,
-+                                                                 well_hits)
-+     counter <- counter + 1
-+     message(paste("Time elapsed:", Sys.time() - now.time))
-+ }
-working on chromosome 1
-Time elapsed: 15.1872231125832
-working on chromosome 2
-Time elapsed: 18.7851170341174
-working on chromosome 2
-Time elapsed: 27.769818286101
-working on chromosome 3
-Time elapsed: 31.5423417607943
-working on chromosome 3
-Time elapsed: 38.5572818954786
-working on chromosome 4
-Time elapsed: 42.3456679066022
-working on chromosome 4
-Time elapsed: 47.9905269225438
-working on chromosome 5
-Time elapsed: 51.8862973372142
-working on chromosome 5
-Time elapsed: 58.017082174619
-working on chromosome 6
-Time elapsed: 1.03685373359256
-working on chromosome 6
-Time elapsed: 1.14011047482491
-working on chromosome 7
-Time elapsed: 1.21685318158733
-working on chromosome 7
-Time elapsed: 1.31774301687876
-working on chromosome 8
-Time elapsed: 1.40214636822542
-working on chromosome 8
-Time elapsed: 1.47979114585453
-working on chromosome 9
-Time elapsed: 1.5706077905496
-working on chromosome 9
-Time elapsed: 1.65049203389221
-working on chromosome 10
-Time elapsed: 1.75178754488627
-working on chromosome 10
-Time elapsed: 1.82188072827127
-working on chromosome 11
-Time elapsed: 1.93350333889325
-working on chromosome 11
-Time elapsed: 2.00240224401156
-working on chromosome 12
-Time elapsed: 2.1245525779989
-working on chromosome 12
-Time elapsed: 2.17466019835737
-working on chromosome 13
-Time elapsed: 2.30507762180434
-working on chromosome 13
-Time elapsed: 2.31115688628621
-working on chromosome 14
-Time elapsed: 2.44459981799126
-working on chromosome 14
-Time elapsed: 2.47084239502748
-working on chromosome 15
-Time elapsed: 2.60713198304176
-working on chromosome 15
-Time elapsed: 2.63076751828194
-working on chromosome 16
-Time elapsed: 2.76461486968729
-working on chromosome 16
-Time elapsed: 2.80793634255727
-working on chromosome 17
-Time elapsed: 2.94009016103215
-working on chromosome 17
-Time elapsed: 3.00387517836359
-working on chromosome 18
-Time elapsed: 3.13183418585194
-working on chromosome 18
-Time elapsed: 3.14189940763844
-working on chromosome 19
-Time elapsed: 3.2677427371343
-working on chromosome 19
-Time elapsed: 3.33731348699994
-working on chromosome 20
-Time elapsed: 3.45912835975488
-working on chromosome 20
-Time elapsed: 3.49529924419191
-working on chromosome 21
-Time elapsed: 3.61504845036401
-working on chromosome 21
-Time elapsed: 3.6314336168766
-working on chromosome 22
-Time elapsed: 3.74996021476057
-working on chromosome 22
-Time elapsed: 3.79175957560539
-working on chromosome X
-Time elapsed: 3.90683697038227
-working on chromosome X
-Time elapsed: 3.9592067346308
-working on chromosome Y
-Time elapsed: 4.06438765923182
-working on chromosome Y
-Time elapsed: 4.08155355440246
-> 
-> # Combine them
-> all.TF.df.fimo.hint.well <- bind_rows(big_list)
-> 
-> # Look at it
-> str(all.TF.df.fimo.hint.well)
-'data.frame':	9999951 obs. of  14 variables:
- $ motifname  : chr  "Hsapiens-jaspar2016-SP2-MA0516.1" "Hsapiens-jaspar2016-REST-MA0138.2" "Hsapiens-jaspar2016-SP2-MA0516.1" "Hsapiens-jaspar2016-FLI1-MA0475.1" ...
- $ chrom      : chr  "1" "1" "1" "1" ...
- $ start      : int  5662059 5882675 60762828 29528102 33852587 167656253 37323370 121569953 248812885 65132999 ...
- $ endpos     : int  5662073 5882695 60762842 29528112 33852601 167656266 37323380 121569962 248812899 65133008 ...
- $ strand     : chr  "-" "+" "-" "-" ...
- $ motifscore : num  11.57 6.63 10.24 12.11 12.97 ...
- $ pval       : num  3.89e-05 4.14e-05 7.38e-05 4.21e-05 1.85e-05 4.68e-05 5.61e-05 9.31e-05 1.93e-05 3.53e-05 ...
- $ sequence   : chr  "CCTCCACCTCCCACC" "ACGAGCACCTAGAACAAGGGC" "TTTCCTCCCTCTTCC" "CCAGGAAGGGG" ...
- $ loc        : chr  "chr1:5662059-5662073" "chr1:5882675-5882695" "chr1:60762828-60762842" "chr1:29528102-29528112" ...
- $ cs_hit     : num  0 0 0 0 0 0 0 0 0 0 ...
- $ h_count    : num  0 0 0 0 0 0 0 0 0 0 ...
- $ h_max_score: num  0 0 0 0 0 0 0 0 0 0 ...
- $ w_count    : num  0 0 0 1 0 0 0 0 0 0 ...
- $ w_min_score: num  0 0 0 -9.11 0 ...
-> 
-> # Save it
-> write.fst(all.TF.df.fimo.hint.well,
-+           path = "/scratch/data/all.TF.df.fimo.hint.well.seed20.10M.Rdata")
-> 
-> # Exploration can wait for now....add that later
-> 
-Time elapsed: 4.18227128956053
-> 
-> # Combine them
-> all.TF.df.fimo.hint.well <- bind_rows(big_list)
-> 
-> # Look at it
-> str(all.TF.df.fimo.hint.well)
-'data.frame':	9999951 obs. of  14 variables:
- $ motifname  : chr  "Hsapiens-jaspar2016-SP2-MA0516.1" "Hsapiens-jaspar2016-REST-MA0138.2" "Hsapiens-jaspar2016-SP2-MA0516.1" "Hsapiens-jaspar2016-FLI1-MA0475.1" ...
- $ chrom      : chr  "1" "1" "1" "1" ...
- $ start      : int  5662059 5882675 60762828 29528102 33852587 167656253 37323370 121569953 248812885 65132999 ...
- $ endpos     : int  5662073 5882695 60762842 29528112 33852601 167656266 37323380 121569962 248812899 65133008 ...
- $ strand     : chr  "-" "+" "-" "-" ...
- $ motifscore : num  11.57 6.63 10.24 12.11 12.97 ...
- $ pval       : num  3.89e-05 4.14e-05 7.38e-05 4.21e-05 1.85e-05 4.68e-05 5.61e-05 9.31e-05 1.93e-05 3.53e-05 ...
- $ sequence   : chr  "CCTCCACCTCCCACC" "ACGAGCACCTAGAACAAGGGC" "TTTCCTCCCTCTTCC" "CCAGGAAGGGG" ...
- $ loc        : chr  "chr1:5662059-5662073" "chr1:5882675-5882695" "chr1:60762828-60762842" "chr1:29528102-29528112" ...
- $ cs_hit     : num  0 0 0 0 0 0 0 0 0 0 ...
- $ h_count    : num  0 0 0 0 0 0 0 0 1 0 ...
- $ h_max_score: num  0 0 0 0 0 0 0 0 15 0 ...
- $ w_count    : num  0 0 0 1 0 0 0 0 0 0 ...
- $ w_min_score: num  0 0 0 -9.11 0 ...
-> 
-> # Save it
-> write.fst(all.TF.df.fimo.hint.well,
-+           path = "/scratch/data/all.TF.df.fimo.hint.well.seed16.10M.Rdata")
-> 
-> # Exploration can wait for now....add that later
-> 
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
-> libs <- c(
-+     'tidyverse',
-+     'stringr',
-+     'GenomicRanges',
-+     'RPostgreSQL',
-+     'doMC',
-+     'numbers',
-+     'doParallel',
-+     'Matrix',
-+     'fst'
-+ )
-> 
-> for (lib in libs) {
-+     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
-+         install.packages(lib, repos='http://cran.us.r-project.org')
-+     }
-+ }
-── Attaching packages ─────────────────────────────────────── tidyverse 1.2.0 ──
-✔ ggplot2 2.2.1     ✔ purrr   0.2.4
-✔ tibble  1.3.4     ✔ dplyr   0.7.4
-✔ tidyr   0.7.2     ✔ stringr 1.2.0
-✔ readr   1.1.1     ✔ forcats 0.2.0
-── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
-✖ dplyr::filter() masks stats::filter()
-✖ dplyr::lag()    masks stats::lag()
-
-Attaching package: ‘BiocGenerics’
-
-The following objects are masked from ‘package:parallel’:
-
-    clusterApply, clusterApplyLB, clusterCall, clusterEvalQ,
-    clusterExport, clusterMap, parApply, parCapply, parLapply,
-    parLapplyLB, parRapply, parSapply, parSapplyLB
-
-The following objects are masked from ‘package:dplyr’:
-
-    combine, intersect, setdiff, union
-
-The following objects are masked from ‘package:stats’:
-
-    IQR, mad, sd, var, xtabs
-
-The following objects are masked from ‘package:base’:
-
-    anyDuplicated, append, as.data.frame, cbind, colMeans, colnames,
-    colSums, do.call, duplicated, eval, evalq, Filter, Find, get, grep,
-    grepl, intersect, is.unsorted, lapply, lengths, Map, mapply, match,
-    mget, order, paste, pmax, pmax.int, pmin, pmin.int, Position, rank,
-    rbind, Reduce, rowMeans, rownames, rowSums, sapply, setdiff, sort,
-    table, tapply, union, unique, unsplit, which, which.max, which.min
-
-
-Attaching package: ‘S4Vectors’
-
-The following objects are masked from ‘package:dplyr’:
-
-    first, rename
-
-The following object is masked from ‘package:tidyr’:
-
-    expand
-
-The following object is masked from ‘package:base’:
-
-    expand.grid
-
-
-Attaching package: ‘IRanges’
-
-The following objects are masked from ‘package:dplyr’:
-
-    collapse, desc, slice
-
-The following object is masked from ‘package:purrr’:
-
-    reduce
-
-
-Attaching package: ‘foreach’
-
-The following objects are masked from ‘package:purrr’:
-
-    accumulate, when
-
-
-Attaching package: ‘Matrix’
-
-The following object is masked from ‘package:S4Vectors’:
-
-    expand
-
-The following object is masked from ‘package:tidyr’:
-
-    expand
-
-> 
-> library(BSgenome.Hsapiens.UCSC.hg38)
-Loading required package: BSgenome
-Loading required package: Biostrings
-Loading required package: XVector
-
-Attaching package: ‘XVector’
-
-The following object is masked from ‘package:purrr’:
-
-    compact
-
-
-Attaching package: ‘Biostrings’
-
-The following object is masked from ‘package:base’:
-
-    strsplit
-
-Loading required package: rtracklayer
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
-> libs <- c(
-+     'tidyverse',
-+     'stringr',
-+     'GenomicRanges',
-+     'RPostgreSQL',
-+     'doMC',
-+     'numbers',
-+     'doParallel',
-+     'Matrix',
-+     'fst'
-+ )
-> 
-> for (lib in libs) {
-+     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
-+         install.packages(lib, repos='http://cran.us.r-project.org')
-+     }
-+ }
-── Attaching packages ─────────────────────────────────────── tidyverse 1.2.0 ──
-✔ ggplot2 2.2.1     ✔ purrr   0.2.4
-✔ tibble  1.3.4     ✔ dplyr   0.7.4
-✔ tidyr   0.7.2     ✔ stringr 1.2.0
-✔ readr   1.1.1     ✔ forcats 0.2.0
-── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
-✖ dplyr::filter() masks stats::filter()
-✖ dplyr::lag()    masks stats::lag()
-
-Attaching package: ‘BiocGenerics’
-
-The following objects are masked from ‘package:parallel’:
-
-    clusterApply, clusterApplyLB, clusterCall, clusterEvalQ,
-    clusterExport, clusterMap, parApply, parCapply, parLapply,
-    parLapplyLB, parRapply, parSapply, parSapplyLB
-
-The following objects are masked from ‘package:dplyr’:
-
-    combine, intersect, setdiff, union
-
-The following objects are masked from ‘package:stats’:
-
-    IQR, mad, sd, var, xtabs
-
-The following objects are masked from ‘package:base’:
-
-    anyDuplicated, append, as.data.frame, cbind, colMeans, colnames,
-    colSums, do.call, duplicated, eval, evalq, Filter, Find, get, grep,
-    grepl, intersect, is.unsorted, lapply, lengths, Map, mapply, match,
-    mget, order, paste, pmax, pmax.int, pmin, pmin.int, Position, rank,
-    rbind, Reduce, rowMeans, rownames, rowSums, sapply, setdiff, sort,
-    table, tapply, union, unique, unsplit, which, which.max, which.min
-
-
-Attaching package: ‘S4Vectors’
-
-The following objects are masked from ‘package:dplyr’:
-
-    first, rename
-
-The following object is masked from ‘package:tidyr’:
-
-    expand
-
-The following object is masked from ‘package:base’:
-
-    expand.grid
-
-
-Attaching package: ‘IRanges’
-
-The following objects are masked from ‘package:dplyr’:
-
-    collapse, desc, slice
-
-The following object is masked from ‘package:purrr’:
-
-    reduce
-
-> hg38 = BSgenome.Hsapiens.UCSC.hg38
-> 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
-> 
-> # Load data
-> load("../Rdata_files/Tfmotifmap.Rdata")
-> load("../Rdata_files/motif_class_pairs.Rdata")
-> 
-> # Make Jaspar translation table
-> suppressMessages(library(MotifDb))
-
-Attaching package: ‘foreach’
-
-The following objects are masked from ‘package:purrr’:
-
-    accumulate, when
-
-
-Attaching package: ‘Matrix’
-
-The following object is masked from ‘package:S4Vectors’:
-
-    expand
-
-The following object is masked from ‘package:tidyr’:
-
-    expand
-
-> 
-> library(BSgenome.Hsapiens.UCSC.hg38)
-Loading required package: BSgenome
-Loading required package: Biostrings
-Loading required package: XVector
-
-Attaching package: ‘XVector’
-
-The following object is masked from ‘package:purrr’:
-
-    compact
-
-
-Attaching package: ‘Biostrings’
-
-The following object is masked from ‘package:base’:
-
-    strsplit
-
-Loading required package: rtracklayer
-> jaspar.motifs <- subset(MotifDb, dataSource == "jaspar2016")
-> jaspar.df <- data_frame(Long.Name = names(jaspar.motifs),
-+                         Short.Name = trimws(values(jaspar.motifs)$providerName)
-+                         )
-> 
-> fixed.motif.class <- motif.class %>%
-+     left_join(jaspar.df, by = c("motif" = "Short.Name")) %>%
-+     select("motifname" = "Long.Name", class)
-> 
-> # Grab the FIMO dataframe (~400 million records)
-> all.TF.df.fimo.hint.well <-
-+     read.fst(path = "/scratch/data/all.TF.df.fimo.hint.well.seed16.10M.Rdata")
-> hg38 = BSgenome.Hsapiens.UCSC.hg38
-> 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
-> 
-> # Load data
-> load("../Rdata_files/Tfmotifmap.Rdata")
-> load("../Rdata_files/motif_class_pairs.Rdata")
-> 
-> # Make Jaspar translation table
-> suppressMessages(library(MotifDb))
-> jaspar.motifs <- subset(MotifDb, dataSource == "jaspar2016")
-> jaspar.df <- data_frame(Long.Name = names(jaspar.motifs),
-+                         Short.Name = trimws(values(jaspar.motifs)$providerName)
-+                         )
-> 
-> fixed.motif.class <- motif.class %>%
-+     left_join(jaspar.df, by = c("motif" = "Short.Name")) %>%
-+     select("motifname" = "Long.Name", class)
-> 
-> # Grab the FIMO dataframe (~400 million records)
-> all.TF.df.fimo.hint.well <-
-+     read.fst(path = "/scratch/data/all.TF.df.fimo.hint.well.seed20.10M.Rdata")
-> 
-> # Filter the motif class using the dataframe
-> filtered.motif.class <- semi_join(fixed.motif.class,
-+                                   all.TF.df.fimo.hint.well,
-+                                   by = "motifname")
-> 
-> # Create the one-hot motif class
-> filtered.motif.class %>%
-+     # clean up and subset to only relevant motifs
-+     mutate_all(str_trim) %>%
-+     # fix double classes
-+     mutate(class = str_split(class, "::")) %>%
-+     unnest(class) %>%
-+     # create one-hot(ish, some double matches) version
-+     mutate(dummy_yesno = 1) %>%
-+     distinct %>%
-+     spread(class, dummy_yesno, fill = 0) ->
-+     motif_class_hot
-> 
-> # Add the motif class to the dataframe
-> all.TF.df.fimo.hint.well.annotated <- left_join(all.TF.df.fimo.hint.well,
-+                                                 motif_class_hot)
-Joining, by = "motifname"
-> 
-> # Filter the motif class using the dataframe
-> filtered.motif.class <- semi_join(fixed.motif.class,
-+                                   all.TF.df.fimo.hint.well,
-+                                   by = "motifname")
-> 
-> # Create the one-hot motif class
-> filtered.motif.class %>%
-+     # clean up and subset to only relevant motifs
-+     mutate_all(str_trim) %>%
-+     # fix double classes
-+     mutate(class = str_split(class, "::")) %>%
-+     unnest(class) %>%
-+     # create one-hot(ish, some double matches) version
-+     mutate(dummy_yesno = 1) %>%
-+     distinct %>%
-+     spread(class, dummy_yesno, fill = 0) ->
-+     motif_class_hot
-> 
-> # Add the motif class to the dataframe
-> all.TF.df.fimo.hint.well.annotated <- left_join(all.TF.df.fimo.hint.well,
-+                                                 motif_class_hot)
-Joining, by = "motifname"
-> 
-> # Add GC content
-> get_gc_content <- function(start_col, end_col, chrom_col, b=100) {
-+     require(GenomicRanges)
-+ 
-+     window_center <- round((start_col + end_col)/2)
-+     windows <- getSeq(hg38, paste0("chr",chrom_col), window_center-b, window_center+b)
-+ 
-+     alph_freq <- alphabetFrequency(windows)
-+     gc_content <- rowSums(alph_freq[,c("C","G")])/(2*b+1)
-+ 
-+     return(gc_content)
-+ }
-> 
-> 
-> all.TF.df.fimo.hint.well.annotated %>%
-+     mutate("gc_content" = get_gc_content(start,endpos,chrom)) ->
-+     all.TF.df.fimo.hint.well.annotated
-> 
-> # Add GC content
-> get_gc_content <- function(start_col, end_col, chrom_col, b=100) {
-+     require(GenomicRanges)
-+ 
-+     window_center <- round((start_col + end_col)/2)
-+     windows <- getSeq(hg38, paste0("chr",chrom_col), window_center-b, window_center+b)
-+ 
-+     alph_freq <- alphabetFrequency(windows)
-+     gc_content <- rowSums(alph_freq[,c("C","G")])/(2*b+1)
-+ 
-+     return(gc_content)
-+ }
-> 
-> 
-> all.TF.df.fimo.hint.well.annotated %>%
-+     mutate("gc_content" = get_gc_content(start,endpos,chrom)) ->
-+     all.TF.df.fimo.hint.well.annotated
-> 
-> # Add TSS Distance
-> # Changed host to localhost
-> db_gtf <- dbConnect(PostgreSQL(), user= "trena", password="trena", dbname="hg38", host="localhost")
-> query <- "select * from gtf where moleculetype='gene' and gene_biotype='protein_coding'"
-> tss_raw_table <- dbGetQuery(db_gtf, query)[, c("chr", "gene_name", "start", "endpos","strand")]
-> 
-> # Add TSS Distance
-> # Changed host to localhost
-> db_gtf <- dbConnect(PostgreSQL(), user= "trena", password="trena", dbname="hg38", host="localhost")
-> query <- "select * from gtf where moleculetype='gene' and gene_biotype='protein_coding'"
-> tss_raw_table <- dbGetQuery(db_gtf, query)[, c("chr", "gene_name", "start", "endpos","strand")]
-> 
-> tss_raw_table %>%
-+     mutate(ref = ifelse(strand == '+', start, endpos)) %>%
-+     select("chrom" = "chr", "ts_start" = "ref") %>%
-+     filter(chrom != 'chrMT') %>%
-+     mutate(chrom=str_sub(chrom,  start = 4)) ->
-+     tss_tbl
-> 
-> motif_gr <- makeGRangesFromDataFrame(all.TF.df.fimo.hint.well.annotated, start.field="start", end.field="endpos")
-> 
-> tss_raw_table %>%
-+     mutate(ref = ifelse(strand == '+', start, endpos)) %>%
-+     select("chrom" = "chr", "ts_start" = "ref") %>%
-+     filter(chrom != 'chrMT') %>%
-+     mutate(chrom=str_sub(chrom,  start = 4)) ->
-+     tss_tbl
-> 
-> motif_gr <- makeGRangesFromDataFrame(all.TF.df.fimo.hint.well.annotated, start.field="start", end.field="endpos")
-> tss_gr <- makeGRangesFromDataFrame(tss_tbl, start.field="ts_start", end.field="ts_start")
-> tss_gr <- makeGRangesFromDataFrame(tss_tbl, start.field="ts_start", end.field="ts_start")
-> dist_to_nearest_tss <- distanceToNearest(motif_gr, tss_gr, select="arbitrary")
-> dist_to_nearest_tss <- distanceToNearest(motif_gr, tss_gr, select="arbitrary")
-> tss_dists <- mcols(dist_to_nearest_tss)[,1]
-> 
-> all.TF.df.fimo.hint.well.annotated %>%
-+     mutate(asinh_tss_dist = asinh(tss_dists)) ->
-+         all.TF.df.fimo.hint.well.annotated
-> 
-> # Change counts to fracs
-> all.TF.df.fimo.hint.well.annotated %>%
-+     mutate(h_frac = h_count/max(h_count)) %>%
-+     mutate(w_frac = w_count/max(w_count)) %>%
-+     select(-one_of("h_count","w_count")) %>%
-+     select(motifname:w_min_score, h_frac, w_frac, gc_content, asinh_tss_dist, everything()) ->
-+     all.TF.df.fimo.hint.well.annotated
-> 
-> # Save the data to an fst file
-> write.fst(all.TF.df.fimo.hint.well.annotated,
-+           path="/scratch/data/all.TF.df.fimo.hint.well.seed20.annotated.10M.fst")
-> tss_dists <- mcols(dist_to_nearest_tss)[,1]
-> 
-> all.TF.df.fimo.hint.well.annotated %>%
-+     mutate(asinh_tss_dist = asinh(tss_dists)) ->
-+         all.TF.df.fimo.hint.well.annotated
-> 
-> # Change counts to fracs
-> all.TF.df.fimo.hint.well.annotated %>%
-+     mutate(h_frac = h_count/max(h_count)) %>%
-+     mutate(w_frac = w_count/max(w_count)) %>%
-+     select(-one_of("h_count","w_count")) %>%
-+     select(motifname:w_min_score, h_frac, w_frac, gc_content, asinh_tss_dist, everything()) ->
-+     all.TF.df.fimo.hint.well.annotated
-> 
-> # Save the data to an fst file
-> write.fst(all.TF.df.fimo.hint.well.annotated,
-+           path="/scratch/data/all.TF.df.fimo.hint.well.seed16.annotated.10M.fst")
-> 
-> 
-> 
-> 
-> 
-> 
-> 
-> 
-> 
-> 
-> 
-> 
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
-> libs <- c(
-+     'RColorBrewer',
-+     'ggplot2',
-+     'xgboost',
-+     'glmnet',
-+     'dplyr',
-+     'tidyr',
-+     'pROC',
-+     'ROCR',
-+     'stringr',
-+     'caret',
-+     'caTools',
-+     'fst'
-+ )
-> 
-> for (lib in libs) {
-+     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
-+         install.packages(lib, repos='http://cran.us.r-project.org')
-+     }
-+ }
-Loaded glmnet 2.0-13
-
-
-Attaching package: ‘dplyr’
-
-The following object is masked from ‘package:xgboost’:
-
-    slice
-
-The following objects are masked from ‘package:stats’:
-
-    filter, lag
-
-The following objects are masked from ‘package:base’:
-
-    intersect, setdiff, setequal, union
-
-
-Attaching package: ‘tidyr’
-
-The following object is masked from ‘package:Matrix’:
-
-    expand
-
-Type 'citation("pROC")' for a citation.
-
-Attaching package: ‘pROC’
-
-The following object is masked from ‘package:glmnet’:
-
-    auc
-
-The following objects are masked from ‘package:stats’:
-
-    cov, smooth, var
-
-
-Attaching package: ‘gplots’
-
-The following object is masked from ‘package:stats’:
-
-    lowess
-
-> 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
-> 
-> # Load motifs
-> load("../Rdata_files/motif_class_pairs.Rdata")
-> 
-> # Load the 2 datasets 
-> full.16 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed16.annotated.10M.fst")
-> full.20 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed20.annotated.10M.fst")
-> 
-> # Remove designated columns
-> sub.20 <- select(full.20, -pval, -sequence, -start, -endpos)
-> sub.16 <- select(full.16, -pval, -sequence, -start, -endpos)
-> 
-> # Join them
-> my.keys <- setdiff(names(sub.20), c("h_max_score","w_min_score","h_frac","w_frac"))
-> all.TF.df.fimo.hint.well.annotated <- full_join(sub.20, sub.16, by = my.keys, suffix = c("_20","_16"))
-> 
-> # Fix columns and filter
-> colnames(all.TF.df.fimo.hint.well.annotated) <- make.names(colnames(all.TF.df.fimo.hint.well.annotated), unique=TRUE)
-> 
-> all.TF.df.fimo.hint.well.annotated %>%
-+     filter(h_max_score_16 > 3.6 | h_max_score_20 > 3.6 | w_min_score_16 < -2.3 | w_min_score_20 < -2.3) ->
-+     df_only_footprint_hits
-> 
-> # Split up the data into training/testing/validation
-> cols_to_drop <- c('motifname', 'chrom', 'start', 'endpos', 'strand', 'pval', 'sequence','loc')
-> 
-> df_only_footprint_hits %>%
-+     filter(chrom %in% c("2","4")) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     val_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> df_only_footprint_hits %>%
-+     filter(chrom %in% c("1","3","5")) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     test_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> df_only_footprint_hits %>%
-+     filter(!(chrom %in% c("1","2","3","4","5"))) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     train_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> remove(all.TF.df.fimo.hint.well.annotated, df_only_footprint_hits)
-> 
-> # Split predictors and responses
-> val_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_val
-> 
-> val_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_val
-> 
-> test_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_test
-> 
-> test_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_test
-> 
-> train_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_train
-> 
-> train_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_train
-> 
-> remove(val_df, test_df, train_df)
-> 
-> # Train the boosted model
-> param <- list("objective" = "binary:logistic",
-+               "max.depth" = 7,
-+               "eta" = 0.005,
-+               "eval.metric" = "auc"
-+               )
-> 
-> gbdt_medium <- xgboost(
-+     params = param,
-+     data = X_train,
-+     label = y_train,
-+     nround = 200,
-+     verbose = FALSE,
-+     missing = NA
-+ )
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
-> libs <- c(
-+     'RColorBrewer',
-+     'ggplot2',
-+     'xgboost',
-+     'glmnet',
-+     'dplyr',
-+     'tidyr',
-+     'pROC',
-+     'ROCR',
-+     'stringr',
-+     'caret',
-+     'caTools',
-+     'fst'
-+ )
-> 
-> for (lib in libs) {
-+     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
-+         install.packages(lib, repos='http://cran.us.r-project.org')
-+     }
-+ }
-Loaded glmnet 2.0-13
-
-
-Attaching package: ‘dplyr’
-
-The following object is masked from ‘package:xgboost’:
-
-    slice
-
-The following objects are masked from ‘package:stats’:
-
-    filter, lag
-
-The following objects are masked from ‘package:base’:
-
-    intersect, setdiff, setequal, union
-
-
-Attaching package: ‘tidyr’
-
-The following object is masked from ‘package:Matrix’:
-
-    expand
-
-Type 'citation("pROC")' for a citation.
-
-Attaching package: ‘pROC’
-
-The following object is masked from ‘package:glmnet’:
-
-    auc
-
-The following objects are masked from ‘package:stats’:
-
-    cov, smooth, var
-
-
-Attaching package: ‘gplots’
-
-The following object is masked from ‘package:stats’:
-
-    lowess
-
-> 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
-> 
-> # Load motifs
-> load("../Rdata_files/motif_class_pairs.Rdata")
-> 
-> # Load the 2 datasets 
-> full.16 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed16.annotated.10M.fst")
-> full.20 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed20.annotated.10M.fst")
-> 
-> # Remove designated columns
-> sub.20 <- select(full.20, -pval, -sequence, -start, -endpos)
-> sub.16 <- select(full.16, -pval, -sequence, -start, -endpos)
-> 
-> # Join them
-> my.keys <- setdiff(names(sub.20), c("h_max_score","w_min_score","h_frac","w_frac"))
-> all.TF.df.fimo.hint.well.annotated <- full_join(sub.20, sub.16, by = my.keys, suffix = c("_20","_16"))
-> 
-> # Fix columns and filter
-> colnames(all.TF.df.fimo.hint.well.annotated) <- make.names(colnames(all.TF.df.fimo.hint.well.annotated), unique=TRUE)
-> 
-> all.TF.df.fimo.hint.well.annotated %>%
-+     filter(h_max_score_16 > 3.6 | h_max_score_20 > 3.6 | w_min_score_16 < -2.3 | w_min_score_20 < -2.3) ->
-+     df_only_footprint_hits
-> 
-> # Split up the data into training/testing/validation
-> cols_to_drop <- c('motifname', 'chrom', 'start', 'endpos', 'strand', 'pval', 'sequence','loc')
-> 
-> df_only_footprint_hits %>%
-+     filter(chrom %in% c("2","4")) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     val_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> df_only_footprint_hits %>%
-+     filter(chrom %in% c("1","3","5")) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     test_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> df_only_footprint_hits %>%
-+     filter(!(chrom %in% c("1","2","3","4","5"))) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     train_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> remove(all.TF.df.fimo.hint.well.annotated, df_only_footprint_hits)
-> 
-> # Split predictors and responses
-> val_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_val
-> 
-> val_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_val
-> 
-> test_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_test
-> 
-> test_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_test
-> 
-> train_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_train
-> 
-> train_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_train
-> 
-> remove(val_df, test_df, train_df)
-> 
-> # Train the boosted model
-> param <- list("objective" = "binary:logistic",
-+               "max.depth" = 7,
-+               "eta" = 0.005,
-+               "eval.metric" = "auc"
-+               )
-> 
-> gbdt_medium <- xgboost(
-+     params = param,
-+     data = X_train,
-+     label = y_train,
-+     nround = 200,
-+     verbose = FALSE,
-+     missing = NA
-+ )
-> gbdt_medium$Model.Name <- "trees with classes"
-> 
-> # Save the model
-> xgb.save(gbdt_medium,
-+          "../saved_models/xgboost_TF_site_predict_joined.10M.filtered.model")
-[1] TRUE
-> 
-> # Make the importance matrix figure
-> motif.class$class <- lapply(motif.class$class, make.names, unique=TRUE)
-> importance_matrix <- xgb.importance(colnames(X_train),model=gbdt_medium)
-> 
-> df <- as_data_frame(importance_matrix)
-> df.tf <- subset(df, Feature %in% unique(motif.class$class))
-> df.notf <- subset(df, !(Feature %in% unique(motif.class$class)))
-> tfclass.row <- c("TF_class", unname(as.list(colSums(df.tf[!(colnames(df.tf) %in% c("Feature"))]))) )
-> names(tfclass.row) <- colnames(df)
-> df.sum <- rbind(df.notf,tfclass.row)
-> 
-> png("../figures/joinedImpMatrix.filtered.10M.png")
-> ggplot(data=df.sum, aes(x=reorder(Feature, Gain), y=Gain)) +
-+     geom_bar(stat="identity") +
-+     coord_flip() +
-+     theme_minimal(base_size = 30) +
-+     labs(x = "Feature", y="Gain")
-> dev.off()
-null device 
-          1 
-> 
-> # Gather stats from boosted model
-> medium_pred_df <- make.pred.df.from.model(gbdt_medium, X_test, y_test)
-> colnames(medium_pred_df)[1] <- "ChIPseq.bound"
-> medium_stat_df <- make.stats.df.from.preds(medium_pred_df)
-> 
-> # Make data ready for linear models
-> train_lin <- X_train
-> y_train_lin <- y_train
-> X_test_lin  <- X_test
-> y_test_lin  <- y_test
-> 
-> # Make the Full linear model
-> tf.regressors <- colnames(X_train_lin)[colnames(X_train_lin) %in% unique(motif.class$class)]
-Error in is.data.frame(x) : object 'X_train_lin' not found
-Calls: colnames -> is.data.frame
-Execution halted
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
-> libs <- c(
-+     'RColorBrewer',
-+     'ggplot2',
-+     'xgboost',
-+     'glmnet',
-+     'dplyr',
-+     'tidyr',
-+     'pROC',
-+     'ROCR',
-+     'stringr',
-+     'caret',
-+     'caTools',
-+     'fst'
-+ )
-> 
-> for (lib in libs) {
-+     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
-+         install.packages(lib, repos='http://cran.us.r-project.org')
-+     }
-+ }
-Loaded glmnet 2.0-13
-
-
-Attaching package: ‘dplyr’
-
-The following object is masked from ‘package:xgboost’:
-
-    slice
-
-The following objects are masked from ‘package:stats’:
-
-    filter, lag
-
-The following objects are masked from ‘package:base’:
-
-    intersect, setdiff, setequal, union
-
-
-Attaching package: ‘tidyr’
-
-The following object is masked from ‘package:Matrix’:
-
-    expand
-
-Type 'citation("pROC")' for a citation.
-
-Attaching package: ‘pROC’
-
-The following object is masked from ‘package:glmnet’:
-
-    auc
-
-The following objects are masked from ‘package:stats’:
-
-    cov, smooth, var
-
-
-Attaching package: ‘gplots’
-
-The following object is masked from ‘package:stats’:
-
-    lowess
-
-> 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
-> 
-> # Load motifs
-> load("../Rdata_files/motif_class_pairs.Rdata")
-> 
-> # Load the 2 datasets 
-> full.16 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed16.annotated.10M.fst")
-> full.20 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed20.annotated.10M.fst")
-> 
-> # Remove designated columns
-> sub.20 <- select(full.20, -pval, -sequence, -start, -endpos)
-> sub.16 <- select(full.16, -pval, -sequence, -start, -endpos)
-> 
-> # Join them
-> my.keys <- setdiff(names(sub.20), c("h_max_score","w_min_score","h_frac","w_frac"))
-> all.TF.df.fimo.hint.well.annotated <- full_join(sub.20, sub.16, by = my.keys, suffix = c("_20","_16"))
-> 
-> # Fix columns and filter
-> colnames(all.TF.df.fimo.hint.well.annotated) <- make.names(colnames(all.TF.df.fimo.hint.well.annotated), unique=TRUE)
-> 
-> all.TF.df.fimo.hint.well.annotated %>%
-+     filter(h_max_score_16 > 3.6 | h_max_score_20 > 3.6 | w_min_score_16 < -2.3 | w_min_score_20 < -2.3) ->
-+     df_only_footprint_hits
-> 
-> # Split up the data into training/testing/validation
-> cols_to_drop <- c('motifname', 'chrom', 'start', 'endpos', 'strand', 'pval', 'sequence','loc')
-> 
-> df_only_footprint_hits %>%
-+     filter(chrom %in% c("2","4")) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     val_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> df_only_footprint_hits %>%
-+     filter(chrom %in% c("1","3","5")) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     test_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> df_only_footprint_hits %>%
-+     filter(!(chrom %in% c("1","2","3","4","5"))) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     train_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> remove(all.TF.df.fimo.hint.well.annotated, df_only_footprint_hits)
-> 
-> # Split predictors and responses
-> val_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_val
-> 
-> val_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_val
-> 
-> test_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_test
-> 
-> test_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_test
-> 
-> train_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_train
-> 
-> train_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_train
-> 
-> remove(val_df, test_df, train_df)
-> 
-> # Train the boosted model
-> param <- list("objective" = "binary:logistic",
-+               "max.depth" = 7,
-+               "eta" = 0.005,
-+               "eval.metric" = "auc"
-+               )
-> 
-> gbdt_medium <- xgboost(
-+     params = param,
-+     data = X_train,
-+     label = y_train,
-+     nround = 200,
-+     verbose = FALSE,
-+     missing = NA
-+ )
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
-> # Load all libraries and functions
-> libs <- c(
-+     'RColorBrewer',
-+     'ggplot2',
-+     'xgboost',
-+     'glmnet',
-+     'dplyr',
-+     'tidyr',
-+     'pROC',
-+     'ROCR',
-+     'stringr',
-+     'caret',
-+     'caTools',
-+     'fst'
-+ )
-> 
-> for (lib in libs) {
-+     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
-+         install.packages(lib, repos='http://cran.us.r-project.org')
-+     }
-+ }
-Loaded glmnet 2.0-13
-
-
-Attaching package: ‘dplyr’
-
-The following object is masked from ‘package:xgboost’:
-
-    slice
-
-The following objects are masked from ‘package:stats’:
-
-    filter, lag
-
-The following objects are masked from ‘package:base’:
-
-    intersect, setdiff, setequal, union
-
-
-Attaching package: ‘tidyr’
-
-The following object is masked from ‘package:Matrix’:
-
-    expand
-
-Type 'citation("pROC")' for a citation.
-
-Attaching package: ‘pROC’
-
-The following object is masked from ‘package:glmnet’:
-
-    auc
-
-The following objects are masked from ‘package:stats’:
-
-    cov, smooth, var
-
-
-Attaching package: ‘gplots’
-
-The following object is masked from ‘package:stats’:
-
-    lowess
-
-> 
-> (.packages())
- [1] "fst"          "caTools"      "caret"        "lattice"      "stringr"     
- [6] "ROCR"         "gplots"       "pROC"         "tidyr"        "dplyr"       
-[11] "glmnet"       "foreach"      "Matrix"       "xgboost"      "ggplot2"     
-[16] "RColorBrewer" "stats"        "graphics"     "grDevices"    "utils"       
-[21] "datasets"     "methods"      "base"        
-> 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> source("/ssd/mrichard/github/BDDS/footprints/testdb/src/dbFunctions.R")
-Error in file(filename, "r", encoding = encoding) : 
-  cannot open the connection
-Calls: source -> file
-In addition: Warning message:
-In file(filename, "r", encoding = encoding) :
-  cannot open file '/ssd/mrichard/github/BDDS/footprints/testdb/src/dbFunctions.R': No such file or directory
-Execution halted
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
 > # Load all libraries and functions
 > libs <- c(
 +     'RColorBrewer',
@@ -3015,30 +101,6 @@ The following object is masked from ‘package:stats’:
 > # Load the 2 datasets 
 > full.16 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed16.annotated.10M.fst")
 > full.20 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed20.annotated.10M.fst")
-> gbdt_medium$Model.Name <- "trees with classes"
-> 
-> # Save the model
-> xgb.save(gbdt_medium,
-+          "../saved_models/xgboost_TF_site_predict_joined.10M.filtered.model")
-[1] TRUE
-> 
-> # Make the importance matrix figure
-> motif.class$class <- lapply(motif.class$class, make.names, unique=TRUE)
-> importance_matrix <- xgb.importance(colnames(X_train),model=gbdt_medium)
-> 
-> df <- as_data_frame(importance_matrix)
-> df.tf <- subset(df, Feature %in% unique(motif.class$class))
-> df.notf <- subset(df, !(Feature %in% unique(motif.class$class)))
-> tfclass.row <- c("TF_class", unname(as.list(colSums(df.tf[!(colnames(df.tf) %in% c("Feature"))]))) )
-> names(tfclass.row) <- colnames(df)
-> df.sum <- rbind(df.notf,tfclass.row)
-> 
-> png("../figures/joinedImpMatrix.filtered.10M.png")
-> ggplot(data=df.sum, aes(x=reorder(Feature, Gain), y=Gain)) +
-+     geom_bar(stat="identity") +
-+     coord_flip() +
-+     theme_minimal(base_size = 30) +
-+     labs(x = "Feature", y="Gain")
 > 
 > # Remove designated columns
 > sub.20 <- select(full.20, -pval, -sequence, -start, -endpos)
@@ -3047,26 +109,6 @@ The following object is masked from ‘package:stats’:
 > # Join them
 > my.keys <- setdiff(names(sub.20), c("h_max_score","w_min_score","h_frac","w_frac"))
 > all.TF.df.fimo.hint.well.annotated <- full_join(sub.20, sub.16, by = my.keys, suffix = c("_20","_16"))
-> dev.off()
-null device 
-          1 
-> 
-> # Gather stats from boosted model
-> medium_pred_df <- make.pred.df.from.model(gbdt_medium, X_test, y_test)
-> colnames(medium_pred_df)[1] <- "ChIPseq.bound"
-> medium_stat_df <- make.stats.df.from.preds(medium_pred_df)
-> 
-> # Make data ready for linear models
-> Xtrain_lin <- X_train
-> y_train_lin <- y_train
-> X_test_lin  <- X_test
-> y_test_lin  <- y_test
-> 
-> # Make the Full linear model
-> tf.regressors <- colnames(X_train_lin)[colnames(X_train_lin) %in% unique(motif.class$class)]
-Error in is.data.frame(x) : object 'X_train_lin' not found
-Calls: colnames -> is.data.frame
-Execution halted
 > 
 > colnames(all.TF.df.fimo.hint.well.annotated) <- make.names(colnames(all.TF.df.fimo.hint.well.annotated), unique=TRUE)
 > 
@@ -3074,99 +116,6 @@ Execution halted
 > all.TF.df.fimo.hint.well.annotated %>%
 +     filter(h_max_score_16 > 3.6 | h_max_score_20 > 3.6 | w_min_score_16 < -2.3 | w_min_score_20 < -2.3) ->
 +     df_only_footprint_hits
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
-> libs <- c(
-+     'RColorBrewer',
-+     'ggplot2',
-+     'xgboost',
-+     'glmnet',
-+     'dplyr',
-+     'tidyr',
-+     'pROC',
-+     'ROCR',
-+     'stringr',
-+     'caret',
-+     'caTools',
-+     'fst'
-+ )
-> 
-> for (lib in libs) {
-+     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
-+         install.packages(lib, repos='http://cran.us.r-project.org')
-+     }
-+ }
-Loaded glmnet 2.0-13
-
-
-Attaching package: ‘dplyr’
-
-The following object is masked from ‘package:xgboost’:
-
-    slice
-
-The following objects are masked from ‘package:stats’:
-
-    filter, lag
-
-The following objects are masked from ‘package:base’:
-
-    intersect, setdiff, setequal, union
-
-
-Attaching package: ‘tidyr’
-
-The following object is masked from ‘package:Matrix’:
-
-    expand
-
-Type 'citation("pROC")' for a citation.
-
-Attaching package: ‘pROC’
-
-The following object is masked from ‘package:glmnet’:
-
-    auc
-
-The following objects are masked from ‘package:stats’:
-
-    cov, smooth, var
-
-
-Attaching package: ‘gplots’
-
-The following object is masked from ‘package:stats’:
-
-    lowess
-
-> 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
-> 
-> # Load motifs
-> load("../Rdata_files/motif_class_pairs.Rdata")
-> 
-> # Load the 2 datasets 
-> full.16 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed16.annotated.10M.fst")
 > 
 > 
 > # Remove columns we don't need for this part, then drop the original data
@@ -3240,97 +189,6 @@ The following object is masked from ‘package:stats’:
 +             verbose = FALSE,
 +             missing = NA
 +         )
-> full.20 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed20.annotated.10M.fst")
-> 
-> # Remove designated columns
-> sub.20 <- select(full.20, -pval, -sequence, -start, -endpos)
-> sub.16 <- select(full.16, -pval, -sequence, -start, -endpos)
-> 
-> # Join them
-> my.keys <- setdiff(names(sub.20), c("h_max_score","w_min_score","h_frac","w_frac"))
-> all.TF.df.fimo.hint.well.annotated <- full_join(sub.20, sub.16, by = my.keys, suffix = c("_20","_16"))
-> 
-> # Fix columns and filter
-> colnames(all.TF.df.fimo.hint.well.annotated) <- make.names(colnames(all.TF.df.fimo.hint.well.annotated), unique=TRUE)
-> 
-> all.TF.df.fimo.hint.well.annotated %>%
-+     filter(h_max_score_16 > 3.6 | h_max_score_20 > 3.6 | w_min_score_16 < -2.3 | w_min_score_20 < -2.3) ->
-+     df_only_footprint_hits
-> 
-> # Split up the data into training/testing/validation
-> cols_to_drop <- c('motifname', 'chrom', 'start', 'endpos', 'strand', 'pval', 'sequence','loc')
-> 
-> df_only_footprint_hits %>%
-+     filter(chrom %in% c("2","4")) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     val_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> df_only_footprint_hits %>%
-+     filter(chrom %in% c("1","3","5")) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     test_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> df_only_footprint_hits %>%
-+     filter(!(chrom %in% c("1","2","3","4","5"))) %>%
-+     select(-one_of(cols_to_drop)) ->
-+     train_df
-Warning message:
-Unknown variables: `start`, `endpos`, `pval`, `sequence` 
-> 
-> remove(all.TF.df.fimo.hint.well.annotated, df_only_footprint_hits)
-> 
-> # Split predictors and responses
-> val_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_val
-> 
-> val_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_val
-> 
-> test_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_test
-> 
-> test_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_test
-> 
-> train_df %>%
-+     select(-cs_hit) %>%
-+     as.matrix ->
-+     X_train
-> 
-> train_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_train
-> 
-> remove(val_df, test_df, train_df)
-> 
-> # Train the boosted model
-> param <- list("objective" = "binary:logistic",
-+               "max.depth" = 7,
-+               "eta" = 0.005,
-+               "eval.metric" = "auc"
-+               )
-> 
-> gbdt_medium <- xgboost(
-+     params = param,
-+     data = X_train,
-+     label = y_train,
-+     nround = 200,
-+     verbose = FALSE,
-+     missing = NA
-+ )
 > 
 > gbdt_medium$Model.Name <- "trees with classes"
 > xgb.save(gbdt_medium, "../saved_models/xgboost_TF_site_predict_motif_only.10M.filtered.model")
@@ -3377,102 +235,18 @@ null device
 > 
 > glm.formula <- paste("ChIPseq.bound ~ ", all.regressors.formula, sep='')
 > 
-> glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
-Error: `ChIPseq.bound` contains unknown variables
-Execution halted
-
-R version 3.4.2 (2017-09-28) -- "Short Summer"
-Copyright (C) 2017 The R Foundation for Statistical Computing
-Platform: x86_64-pc-linux-gnu (64-bit)
-
-R is free software and comes with ABSOLUTELY NO WARRANTY.
-You are welcome to redistribute it under certain conditions.
-Type 'license()' or 'licence()' for distribution details.
-
-  Natural language support but running in an English locale
-
-R is a collaborative project with many contributors.
-Type 'contributors()' for more information and
-'citation()' on how to cite R or R packages in publications.
-
-Type 'demo()' for some demos, 'help()' for on-line help, or
-'help.start()' for an HTML browser interface to help.
-Type 'q()' to quit R.
-
-> libs <- c(
-+     'RColorBrewer',
-+     'ggplot2',
-+     'xgboost',
-+     'glmnet',
-+     'dplyr',
-+     'tidyr',
-+     'pROC',
-+     'ROCR',
-+     'stringr',
-+     'caret',
-+     'caTools',
-+     'fst'
-+ )
+> glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
+> glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
 > 
-> for (lib in libs) {
-+     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
-+         install.packages(lib, repos='http://cran.us.r-project.org')
-+     }
-+ }
-Loaded glmnet 2.0-13
-
-
-Attaching package: ‘dplyr’
-
-The following object is masked from ‘package:xgboost’:
-
-    slice
-
-The following objects are masked from ‘package:stats’:
-
-    filter, lag
-
-The following objects are masked from ‘package:base’:
-
-    intersect, setdiff, setequal, union
-
-
-Attaching package: ‘tidyr’
-
-The following object is masked from ‘package:Matrix’:
-
-    expand
-
-Type 'citation("pROC")' for a citation.
-
-Attaching package: ‘pROC’
-
-The following object is masked from ‘package:glmnet’:
-
-    auc
-
-The following objects are masked from ‘package:stats’:
-
-    cov, smooth, var
-
-
-Attaching package: ‘gplots’
-
-The following object is masked from ‘package:stats’:
-
-    lowess
-
+> glm.all <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
+> glm.all$Model.Name <- "glm small"
 > 
-> source("../my_R_functions/utility_functions.R")
-> source("../my_R_functions/stat_functions.R")
-> source("../my_R_functions/plot_functions.R")
-> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
-> 
-> # Load motifs
-> load("../Rdata_files/motif_class_pairs.Rdata")
-> 
-> # Load the 2 datasets 
-> all.TF.df.fimo.hint.well.annotated <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed20.annotated.10M.fst")
+> # Create stats for Full Linear Model
+> glm.pred.df <- make.pred.df.from.glm(glm.all, glm.df.test)
+Warning message:
+In predict.lm(object, newdata, se.fit, scale = 1, type = ifelse(type ==  :
+  prediction from a rank-deficient fit may be misleading
+> glm.stat.df <- make.stats.df.from.preds(glm.pred.df)
 
 R version 3.4.2 (2017-09-28) -- "Short Summer"
 Copyright (C) 2017 The R Foundation for Statistical Computing
@@ -3566,38 +340,99 @@ The following object is masked from ‘package:stats’:
 > 
 > # Load the 2 datasets 
 > all.TF.df.fimo.hint.well.annotated <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed16.annotated.10M.fst")
-> gbdt_medium$Model.Name <- "trees with classes"
+
+R version 3.4.2 (2017-09-28) -- "Short Summer"
+Copyright (C) 2017 The R Foundation for Statistical Computing
+Platform: x86_64-pc-linux-gnu (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> libs <- c(
++     'RColorBrewer',
++     'ggplot2',
++     'xgboost',
++     'glmnet',
++     'dplyr',
++     'tidyr',
++     'pROC',
++     'ROCR',
++     'stringr',
++     'caret',
++     'caTools',
++     'fst'
++ )
 > 
-> # Save the model
-> xgb.save(gbdt_medium,
-+          "../saved_models/xgboost_TF_site_predict_joined.10M.filtered.model")
-[1] TRUE
+> for (lib in libs) {
++     if (!require(lib, character.only = TRUE, quietly = TRUE)) {
++         install.packages(lib, repos='http://cran.us.r-project.org')
++     }
++ }
+Loaded glmnet 2.0-13
+
+
+Attaching package: ‘dplyr’
+
+The following object is masked from ‘package:xgboost’:
+
+    slice
+
+The following objects are masked from ‘package:stats’:
+
+    filter, lag
+
+The following objects are masked from ‘package:base’:
+
+    intersect, setdiff, setequal, union
+
+
+Attaching package: ‘tidyr’
+
+The following object is masked from ‘package:Matrix’:
+
+    expand
+
+Type 'citation("pROC")' for a citation.
+
+Attaching package: ‘pROC’
+
+The following object is masked from ‘package:glmnet’:
+
+    auc
+
+The following objects are masked from ‘package:stats’:
+
+    cov, smooth, var
+
+
+Attaching package: ‘gplots’
+
+The following object is masked from ‘package:stats’:
+
+    lowess
+
 > 
-> # Make the importance matrix figure
-> motif.class$class <- lapply(motif.class$class, make.names, unique=TRUE)
-> importance_matrix <- xgb.importance(colnames(X_train),model=gbdt_medium)
+> source("../my_R_functions/utility_functions.R")
+> source("../my_R_functions/stat_functions.R")
+> source("../my_R_functions/plot_functions.R")
+> source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
 > 
-> df <- as_data_frame(importance_matrix)
-> df.tf <- subset(df, Feature %in% unique(motif.class$class))
-> df.notf <- subset(df, !(Feature %in% unique(motif.class$class)))
-> tfclass.row <- c("TF_class", unname(as.list(colSums(df.tf[!(colnames(df.tf) %in% c("Feature"))]))) )
-> names(tfclass.row) <- colnames(df)
-> df.sum <- rbind(df.notf,tfclass.row)
+> # Load motifs
+> load("../Rdata_files/motif_class_pairs.Rdata")
 > 
-> png("../figures/joinedImpMatrix.filtered.10M.png")
-> ggplot(data=df.sum, aes(x=reorder(Feature, Gain), y=Gain)) +
-+     geom_bar(stat="identity") +
-+     coord_flip() +
-+     theme_minimal(base_size = 30) +
-+     labs(x = "Feature", y="Gain")
-> dev.off()
-null device 
-          1 
-> 
-> # Gather stats from boosted model
-> medium_pred_df <- make.pred.df.from.model(gbdt_medium, X_test, y_test)
-> colnames(medium_pred_df)[1] <- "ChIPseq.bound"
-> medium_stat_df <- make.stats.df.from.preds(medium_pred_df)
+> # Load the 2 datasets 
+> all.TF.df.fimo.hint.well.annotated <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed20.annotated.10M.fst")
 > 
 > # Fix columns and filter
 > colnames(all.TF.df.fimo.hint.well.annotated) <- make.names(colnames(all.TF.df.fimo.hint.well.annotated), unique=TRUE)
@@ -3677,6 +512,11 @@ null device
 +     select(-one_of(cols_to_drop)) ->
 +     train_df
 > 
+> train_df %>%
++     select(cs_hit) %>%
++     as.matrix ->
++     y_train
+> 
 > remove(all.TF.df.fimo.hint.well.annotated, df_only_footprint_hits)
 > 
 > # Split predictors and responses
@@ -3684,6 +524,24 @@ null device
 +     select(-cs_hit) %>%
 +     as.matrix ->
 +     X_val
+> 
+> remove(val_df, test_df, train_df)
+> 
+> # Train the boosted model
+> param <- list("objective" = "binary:logistic",
++               "max.depth" = 7,
++               "eta" = 0.005,
++               "eval.metric" = "auc"
++               )
+> 
+> gbdt_medium <- xgboost(
++     params = param,
++     data = X_train,
++     label = y_train,
++     nround = 200,
++     verbose = FALSE,
++     missing = NA
++ )
 > 
 > val_df %>%
 +     select(cs_hit) %>%
@@ -3727,49 +585,6 @@ null device
 +     verbose = FALSE,
 +     missing = NA
 + )
-> 
-> train_df %>%
-+     select(cs_hit) %>%
-+     as.matrix ->
-+     y_train
-> 
-> remove(val_df, test_df, train_df)
-> 
-> # Train the boosted model
-> param <- list("objective" = "binary:logistic",
-+               "max.depth" = 7,
-+               "eta" = 0.005,
-+               "eval.metric" = "auc"
-+               )
-> 
-> gbdt_medium <- xgboost(
-+     params = param,
-+     data = X_train,
-+     label = y_train,
-+     nround = 200,
-+     verbose = FALSE,
-+     missing = NA
-+ )
-> 
-> # Make data ready for linear models
-> X_train_lin <- X_train
-> y_train_lin <- y_train
-> X_test_lin  <- X_test
-> y_test_lin  <- y_test
-> 
-> # Make the Full linear model
-> tf.regressors <- colnames(X_train_lin)[colnames(X_train_lin) %in% unique(motif.class$class)]
-> non.tf.regressors <-  colnames(X_train_lin)[!colnames(X_train_lin) %in% unique(motif.class$class)]
-> 
-> tf.regressors.formula <- paste("as.factor(", paste(tf.regressors, collapse=") + as.factor("), ")")
-> non.tf.regressors.formula <- paste(non.tf.regressors, collapse=" + ")
-> all.regressors.formula <- paste(non.tf.regressors.formula, tf.regressors.formula, sep=" + ")
-> 
-> glm.formula <- paste("ChIPseq.bound ~ ", all.regressors.formula, sep='')
-> 
-> glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
-Error: `ChIPseq.bound` contains unknown variables
-Execution halted
 > gbdt_medium$Model.Name <- "trees with classes"
 > 
 > # Save the model
@@ -3851,9 +666,10 @@ null device
 > 
 > glm.formula <- paste("ChIPseq.bound ~ ", all.regressors.formula, sep='')
 > 
-> glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
-Error: `ChIPseq.bound` contains unknown variables
-Execution halted
+> glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
+> glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
+> 
+> glm.all <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
 > 
 > # Make data ready for linear models
 > X_train_lin <- X_train
@@ -3871,6 +687,343 @@ Execution halted
 > 
 > glm.formula <- paste("ChIPseq.bound ~ ", all.regressors.formula, sep='')
 > 
-> glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
-Error: `ChIPseq.bound` contains unknown variables
-Execution halted
+> glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
+> glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
+> 
+> glm.all <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
+> glm.all$Model.Name <- "glm small"
+> 
+> # Gather full linear stats
+> glm.pred.df <- make.pred.df.from.glm(glm.all, glm.df.test)
+Warning message:
+In predict.lm(object, newdata, se.fit, scale = 1, type = ifelse(type ==  :
+  prediction from a rank-deficient fit may be misleading
+> glm.stat.df <- make.stats.df.from.preds(glm.pred.df)
+> glm.all$Model.Name <- "glm small"
+> 
+> # Gather full linear stats
+> glm.pred.df <- make.pred.df.from.glm(glm.all, glm.df.test)
+Warning message:
+In predict.lm(object, newdata, se.fit, scale = 1, type = ifelse(type ==  :
+  prediction from a rank-deficient fit may be misleading
+> glm.stat.df <- make.stats.df.from.preds(glm.pred.df)
+> 
+> 
+> # MODEL 3: Individual Linear Models
+> stats.regressors.df <- data.frame()
+> 
+> for (this.regressor in colnames(X_train_lin)) {
++ 
++     if (this.regressor %in% unique(motif.class$class)) {
++         glm.formula <- paste("ChIPseq.bound ~ ", "as.factor(", this.regressor, ")", sep='')
++     } else {
++         glm.formula <- paste("ChIPseq.bound ~ ", this.regressor, sep='')
++     }
++ 
++     glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
++     glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
++ 
++     # Make the model
++     glm.single <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
++     glm.single$Model.Name <- paste("glm ", this.regressor, sep='')
++ 
++     # Create the stats
++     glm.pred.single.df <- make.pred.df.from.glm(glm.single, glm.df.test)
++     glm.stat.single.df <- make.stats.df.from.preds(glm.pred.single.df)
++ 
++     stats.regressors.df <- rbind(stats.regressors.df, glm.stat.single.df)
++ 
++ }
+> 
+> # Make individual linear models
+> 
+> stats.regressors.df <- data.frame()
+> 
+> for (this.regressor in colnames(X_train_lin)) {
++ 
++     if (this.regressor %in% unique(motif.class$class)) {
++         glm.formula <- paste("ChIPseq.bound ~ ", "as.factor(", this.regressor, ")",sep='')
++     } else {
++         glm.formula <- paste("ChIPseq.bound ~ ", this.regressor,sep='')
++     }
++ 
++     glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
++     glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
++ 
++     glm.single <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
++     glm.single$Model.Name <- paste("glm ", this.regressor, sep='')
++ 
++     glm.pred.single.df <- make.pred.df.from.glm(glm.single, glm.df.test)
++     glm.stat.single.df <- make.stats.df.from.preds(glm.pred.single.df)
++ 
++     stats.regressors.df <- rbind(stats.regressors.df, glm.stat.single.df)
++ 
++ }
+> 
+> # Make individual linear models
+> 
+> stats.regressors.df <- data.frame()
+> 
+> for (this.regressor in colnames(X_train_lin)) {
++ 
++     if (this.regressor %in% unique(motif.class$class)) {
++         glm.formula <- paste("ChIPseq.bound ~ ", "as.factor(", this.regressor, ")",sep='')
++     } else {
++         glm.formula <- paste("ChIPseq.bound ~ ", this.regressor,sep='')
++     }
++ 
++     glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
++     glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
++ 
++     glm.single <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
++     glm.single$Model.Name <- paste("glm ", this.regressor, sep='')
++ 
++     glm.pred.single.df <- make.pred.df.from.glm(glm.single, glm.df.test)
++     glm.stat.single.df <- make.stats.df.from.preds(glm.pred.single.df)
++ 
++     stats.regressors.df <- rbind(stats.regressors.df, glm.stat.single.df)
++ 
++ }
+Warning message:
+glm.fit: fitted probabilities numerically 0 or 1 occurred 
+> 
+> # Gather all stats for plotting
+> stats.regressors.df %>%
++     filter(Model.Name %in% c("glm motifscore",
++                              "glm h_frac",
++                              "glm h_max_score",
++                              "glm w_frac",
++                              "glm w_min_score",
++                              "glm gc_content",
++                              "glm asinh_tss_dist")) ->
++     stats.regressors.filtered.df
+> 
+> all.stats.df <- rbind(
++     medium_stat_df,
++     glm.stat.df,
++     stats.regressors.filtered.df)
+> 
+> # Save them for later
+> save(all.stats.df, file = "/scratch/data/seed16AllStats.10M.filtered.Rdata")
+> 
+> # Make a copy to play with
+> all.stats.orig <- all.stats.df
+> 
+> # Grab only the models we want for plotting
+> # Screen out some models for visualization
+> all.stats.orig %>%
++     filter(Model.Name %in% c("glm h_max_score",
++                              "glm w_min_score",
++                              "trees with classes",
++                              "glm small"
++                              )) -> all.stats.df
+> 
+> # Change labels and print out max MCC
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'glm small'] <- 'linear model (all regressors)'
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'trees with classes'] <- 'gradient boosted model'
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'glm h_max_score'] <- 'HINT best score seed 16'
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'glm w_min_score'] <- 'Wellington best score seed 16'
+> 
+> max(all.stats.df$MattCC)
+[1] 0.4097974
+> 
+> # Create custom color palette (matches others, mostly seed 16)
+> myPalette <- c("black","red","blue","green2","darkorange","purple","magenta","brown","cyan")
+> myColors <- myPalette[1:4]
+> names(myColors) <- c('gradient boosted model',
++                      'linear model (all regressors)',
++                      'HINT best score seed 16',
++                      'Wellington best score seed 16'
++                      )
+> colScale <- scale_colour_manual(name = "Model.Name",values = myColors)
+> 
+> # Reorder model names
+> all.stats.df$Model.Name <- factor(all.stats.df$Model.Name,
++                                   levels = c("gradient boosted model",
++                                              "linear model (all regressors)",
++                                              "HINT best score seed 16",
++                                              "Wellington best score seed 16"
++                                              )
++                                   )
+> 
+> # Plot the Matt CC Curve
+> png("../figures/seed16MCC.filtered.10M.png")
+> plot.mattcc.curve(all.stats.df) + theme_minimal(base_size = 15) + colScale
+> dev.off()
+null device 
+          1 
+> 
+> # Plot the ROC curve
+> png("../figures/seed16ROC.filtered.10M.png")
+> plot.roc.curve(all.stats.df, TRUE) + theme_minimal(base_size = 15) + colScale
+> dev.off()
+null device 
+          1 
+> 
+> # Plot the Prec-Rec curve
+> png("../figures/seed16PreRec.filtered.10M.png")
+> plot.precrecall.curve(all.stats.df) + theme_minimal(base_size = 15) + colScale
+Warning message:
+Removed 90 rows containing missing values (geom_path). 
+> dev.off()
+null device 
+          1 
+> 
+> 
+> stats.regressors.df %>%
++     filter(Model.Name %in% c("glm motifscore",
++                              "glm gc_content",
++                              "glm asinh_tss_dist")) ->
++     stats.regressors.filtered.df
+> 
+> # Compare performance using 3 figures:
+> all.stats.df <- rbind(
++     medium_stat_df,
++     glm.stat.df,
++     stats.regressors.filtered.df
++     )
+> 
+> # Save the "all.stats.df" for later
+> save(all.stats.df, file = "/scratch/data/motifOnlyAllStats.10M.filtered.Rdata")
+> 
+> # Change labels and print out MCC
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'glm small'] <- 'linear model (all regressors)'
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'trees with classes'] <- 'gradient boosted model'
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'glm gc_content'] <- 'GC content'
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'glm motifscore'] <- 'motif score'
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'glm asinh_tss_dist'] <- 'arcsinh(TSS distance)'
+> 
+> max(all.stats.df$MattCC)
+[1] 0.2232571
+> 
+> # Create custom color palette (matches joined!)
+> myPalette <- c("black","red","blue","green2","darkorange","purple","magenta","brown","cyan")
+> myColors <- myPalette[c(1,2,7,8,9)]
+> names(myColors) <- c('gradient boosted model',
++                      'linear model (all regressors)',
++                      'GC content',
++                      'motif score',
++                      'arcsinh(TSS distance)'
++                      )
+> colScale <- scale_colour_manual(name = "Model.Name",values = myColors)
+> 
+> # Reorder model names
+> all.stats.df$Model.Name <- factor(all.stats.df$Model.Name,
++                                   levels = c('gradient boosted model',
++                                              'linear model (all regressors)',
++                                              'GC content',
++                                              'motif score',
++                                              'arcsinh(TSS distance)'
++                                              )
++                                   )
+> 
+> # MCC curves
+> png("../figures/motifOnlyMCC.filtered.10M.png")
+> plot.mattcc.curve(all.stats.df) + theme_minimal(base_size = 15) + colScale
+> dev.off()
+null device 
+          1 
+> 
+> 
+> # ROC curves
+> png("../figures/motifOnlyROC.filtered.10M.png")
+> plot.roc.curve(all.stats.df) + theme_minimal(base_size = 15) + colScale
+> dev.off()
+null device 
+          1 
+> 
+> 
+> # Precision-Recall curves
+> png("../figures/motifOnlyPreRec.filtered.10M.png")
+> plot.precrecall.curve(all.stats.df) + theme_minimal(base_size = 15) + colScale
+Warning message:
+Removed 152 rows containing missing values (geom_path). 
+> dev.off()
+null device 
+          1 
+> 
+Warning message:
+glm.fit: fitted probabilities numerically 0 or 1 occurred 
+> 
+> # Gather all stats for plotting
+> stats.regressors.df %>%
++     filter(Model.Name %in% c("glm motifscore",
++                              "glm h_frac",
++                              "glm h_max_score",
++                              "glm w_frac",
++                              "glm w_min_score",
++                              "glm gc_content",
++                              "glm asinh_tss_dist")) ->
++     stats.regressors.filtered.df
+> 
+> all.stats.df <- rbind(
++     medium_stat_df,
++     glm.stat.df,
++     stats.regressors.filtered.df)
+> 
+> # Save them for later
+> save(all.stats.df, file = "/scratch/data/seed20AllStats.10M.filtered.Rdata")
+> 
+> # Make a copy to play with
+> all.stats.orig <- all.stats.df
+> 
+> # Grab only the models we want for plotting
+> # Screen out some models for visualization
+> all.stats.orig %>%
++     filter(Model.Name %in% c("glm h_max_score",
++                              "glm w_min_score",
++                              "trees with classes",
++                              "glm small"
++                              )) -> all.stats.df
+> 
+> # Change labels and print out max MCC
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'glm small'] <- 'linear model (all regressors)'
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'trees with classes'] <- 'gradient boosted model'
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'glm h_max_score'] <- 'HINT best score seed 20'
+> all.stats.df$Model.Name[all.stats.df$Model.Name== 'glm w_min_score'] <- 'Wellington best score seed 20'
+> 
+> max(all.stats.df$MattCC)
+[1] 0.4150344
+> 
+> # Create custom color palette (matches others, mostly seed 16)
+> myPalette <- c("black","red","blue","green2","darkorange","purple","magenta","brown","cyan")
+> myColors <- myPalette[1:4]
+> names(myColors) <- c('gradient boosted model',
++                      'linear model (all regressors)',
++                      'HINT best score seed 20',
++                      'Wellington best score seed 20'
++                      )
+> colScale <- scale_colour_manual(name = "Model.Name",values = myColors)
+> 
+> # Reorder model names
+> all.stats.df$Model.Name <- factor(all.stats.df$Model.Name,
++                                   levels = c("gradient boosted model",
++                                              "linear model (all regressors)",
++                                              "HINT best score seed 20",
++                                              "Wellington best score seed 20"
++                                              )
++                                   )
+> 
+> # Plot the Matt CC Curve
+> png("../figures/seed20MCC.filtered.10M.png")
+> plot.mattcc.curve(all.stats.df) + theme_minimal(base_size = 15) + colScale
+> dev.off()
+null device 
+          1 
+> 
+> # Plot the ROC curve
+> png("../figures/seed20ROC.filtered.10M.png")
+> plot.roc.curve(all.stats.df, TRUE) + theme_minimal(base_size = 15) + colScale
+> dev.off()
+null device 
+          1 
+> 
+> # Plot the Prec-Rec curve
+> png("../figures/seed20PreRec.filtered.10M.png")
+> plot.precrecall.curve(all.stats.df) + theme_minimal(base_size = 15) + colScale
+Warning message:
+Removed 43 rows containing missing values (geom_path). 
+> dev.off()
+null device 
+          1 
+> 
