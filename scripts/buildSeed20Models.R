@@ -151,8 +151,8 @@ all.regressors.formula <- paste(non.tf.regressors.formula, tf.regressors.formula
 
 glm.formula <- paste("ChIPseq.bound ~ ", all.regressors.formula, sep='')
 
-glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
-glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
+glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
+glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
 
 glm.all <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
 glm.all$Model.Name <- "glm small"
@@ -173,8 +173,8 @@ for (this.regressor in colnames(X_train_lin)) {
         glm.formula <- paste("ChIPseq.bound ~ ", this.regressor,sep='')
     }
 
-    glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
-    glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
+    glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
+    glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
 
     glm.single <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
     glm.single$Model.Name <- paste("glm ", this.regressor, sep='')

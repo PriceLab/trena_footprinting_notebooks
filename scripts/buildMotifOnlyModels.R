@@ -25,7 +25,7 @@ for (lib in libs) {
 source("../my_R_functions/utility_functions.R")
 source("../my_R_functions/stat_functions.R")
 source("../my_R_functions/plot_functions.R")
-source("/ssd/mrichard/github/BDDS/footprints/testdb/src/dbFunctions.R")
+source("/scratch/github/BDDS/footprints/testdb/src/dbFunctions.R")
 
 # Load the motif data and the big dataset, plus make the names better
 load("../Rdata_files/motif_class_pairs.Rdata")
@@ -165,8 +165,8 @@ all.regressors.formula <- paste(non.tf.regressors.formula, tf.regressors.formula
 
 glm.formula <- paste("ChIPseq.bound ~ ", all.regressors.formula, sep='')
 
-glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
-glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
+glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
+glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
 
 glm.all <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
 glm.all$Model.Name <- "glm small"
@@ -182,13 +182,13 @@ stats.regressors.df <- data.frame()
 for (this.regressor in colnames(X_train_lin)) {
 
     if (this.regressor %in% unique(motif.class$class)) {
-        glm.formula <- paste("ChIPseq.bound ~ ", "as.factor(", this.regressor, ")",sep='')
+        glm.formula <- paste("ChIPseq.bound ~ ", "as.factor(", this.regressor, ")", sep='')
     } else {
-        glm.formula <- paste("ChIPseq.bound ~ ", this.regressor,sep='')
+        glm.formula <- paste("ChIPseq.bound ~ ", this.regressor, sep='')
     }
 
-    glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
-    glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("cs_hit" = "ChIPseq.bound")
+    glm.df.train <- as.data.frame(cbind(y_train_lin, X_train_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
+    glm.df.test <-  as.data.frame(cbind(y_test_lin, X_test_lin)) %>% rename("ChIPseq.bound" = "cs_hit")
 
     # Make the model
     glm.single <- glm(as.formula(glm.formula), data=glm.df.train, family=binomial)
