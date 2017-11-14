@@ -136,7 +136,7 @@ colnames(medium_pred_df)[1] <- "ChIPseq.bound"
 medium_stat_df <- make.stats.df.from.preds(medium_pred_df)
 
 # Make data ready for linear models
-train_lin <- X_train
+X_train_lin <- X_train
 y_train_lin <- y_train
 X_test_lin  <- X_test
 y_test_lin  <- y_test
