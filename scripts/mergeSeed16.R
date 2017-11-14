@@ -146,6 +146,7 @@ all.TF.df.fimo.hint.well <- bind_rows(big_list)
 str(all.TF.df.fimo.hint.well)
 
 # Save it
-save(all.TF.df.fimo.hint.well, file = "/scratch/data/all.TF.df.fimo.hint.well.seed16.10M.Rdata")
+write.fst(all.TF.df.fimo.hint.well,
+          path = "/scratch/data/all.TF.df.fimo.hint.well.seed16.10M.Rdata")
 
 # Exploration can wait for now....add that later

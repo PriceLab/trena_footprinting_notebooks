@@ -41,7 +41,7 @@ fixed.motif.class <- motif.class %>%
 
 # Grab the FIMO dataframe (~400 million records)
 all.TF.df.fimo.hint.well <-
-    read.fst(path = "/scratch/data/all.TF.df.fimo.hint.well.seed16.10M.Rdata")
+    read.fst(path = "/scratch/data/all.TF.df.fimo.hint.well.seed20.10M.Rdata")
 
 # Filter the motif class using the dataframe
 filtered.motif.class <- semi_join(fixed.motif.class,
@@ -115,7 +115,7 @@ all.TF.df.fimo.hint.well.annotated %>%
 
 # Save the data to an fst file
 write.fst(all.TF.df.fimo.hint.well.annotated,
-          path="/scratch/data/all.TF.df.fimo.hint.well.seed16.annotated.10M.fst")
+          path="/scratch/data/all.TF.df.fimo.hint.well.seed20.annotated.10M.fst")
 
 
 
