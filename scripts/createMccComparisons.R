@@ -57,8 +57,10 @@ findMCCsForWellingtonCutoff <- function(Well.cutoff){
                       "linear model (all regressors)")])
 }
 
-# Run HINT Cutoff script over a range of 20 values, collect into a DF, and plot
-hint.values <- seq(0,10,0.5)
+# Run Cutoff scripts over a range of values, collect into a DF, and plot
+
+hint.values <- seq(0,10,0.2) # 50 values
+#hint.values <- seq(0,10,0.5) # 20 values
 all.hint.list <- lapply(hint.values, findMCCsForHINTCutoff)
 all.boosted <- sapply(all.hint.list, function(x) x[1])
 all.linear <- sapply(all.hint.list, function(x) x[2])
@@ -71,8 +73,9 @@ hint.df <- data_frame(Threshold = rep(hint.values,2),
                       )
 
 hint.plot <- ggscatter(hint.df, x = "Threshold", y = "MCC", color = "Model")
-                      
-well.values <- seq(-5, 0, 0.25)
+
+well.values <- seq(-5, 0, 0.1) # 50 values
+#well.values <- seq(-5, 0, 0.25) # 20 values
 all.well.list <- lapply(well.values, findMCCsForWellingtonCutoff)
 all.boosted <- sapply(all.well.list, function(x) x[1])
 all.linear <- sapply(all.well.list, function(x) x[2])

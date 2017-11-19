@@ -90,8 +90,10 @@ Loading required package: magrittr
 +                       "linear model (all regressors)")])
 + }
 > 
-> # Run HINT Cutoff script over a range of 20 values, collect into a DF, and plot
-> hint.values <- seq(0,10,0.5)
+> # Run Cutoff scripts over a range of values, collect into a DF, and plot
+> 
+> hint.values <- seq(0,10,0.2) # 50 values
+> #hint.values <- seq(0,10,0.5) # 20 values
 > all.hint.list <- lapply(hint.values, findMCCsForHINTCutoff)
 There were 50 or more warnings (use warnings() to see the first 50)
 > all.boosted <- sapply(all.hint.list, function(x) x[1])
@@ -105,8 +107,9 @@ There were 50 or more warnings (use warnings() to see the first 50)
 +                       )
 > 
 > hint.plot <- ggscatter(hint.df, x = "Threshold", y = "MCC", color = "Model")
->                       
-> well.values <- seq(-5, 0, 0.25)
+> 
+> well.values <- seq(-5, 0, 0.1) # 50 values
+> #well.values <- seq(-5, 0, 0.25) # 20 values
 > all.well.list <- lapply(well.values, findMCCsForWellingtonCutoff)
 There were 50 or more warnings (use warnings() to see the first 50)
 > all.boosted <- sapply(all.well.list, function(x) x[1])
