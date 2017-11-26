@@ -11,6 +11,20 @@ seed.20 <- read.fst("/scratch/data/all.TF.df.fimo.hint.well.seed20.annotated.10M
 # Glue them together to make the joined dataset
 joined.df <- joinModelData(seed.16, seed.20)
 
+# Solve once using all points
+prepped.data <- prepModelData(joined.df, "both",
+                              wellCutoff = 1, # Set it above 0 so it filters nothing                                  
+                              hintCutoff = -1) # Set it below 0 so it filters nothing
+# Create the boosted model
+boosted.results <- buildBoostedModel(prepped.data)
+# Create the linear models
+linear.results <- buildLinearModels(prepped.data)
+# Pull out the MCC max value vector
+mcc.vector <- extractMaxMCC(boosted.results[[1]], linear.results)
+# Return just the boosted and full linear values
+all.points.MCCs <- mcc.vector[c("gradient boosted model",
+                                "linear model (all regressors)")]
+
 # Create a function that:
 # 1) Takes a HINT cutoff value that we'll vary
 # 2) Runs "prepModelData" to filter according to the cutoff value
@@ -21,7 +35,9 @@ joined.df <- joinModelData(seed.16, seed.20)
 findMCCsForHINTCutoff <- function(HINT.cutoff){
 
     # Prep the data as specified by the cutoff
-    prepped.data <- prepModelData(joined.df, "both", hintCutoff = HINT.cutoff)
+    prepped.data <- prepModelData(joined.df, "both",
+                                  hintCutoff = HINT.cutoff,
+                                  wellCutoff = -Inf) # Set to -Inf so it's effectively not a filter
 
     # Create the boosted model
     boosted.results <- buildBoostedModel(prepped.data)
@@ -41,7 +57,9 @@ findMCCsForHINTCutoff <- function(HINT.cutoff){
 findMCCsForWellingtonCutoff <- function(Well.cutoff){
 
     # Prep the data as specified by the cutoff
-    prepped.data <- prepModelData(joined.df, "both", wellCutoff = Well.cutoff)
+    prepped.data <- prepModelData(joined.df, "both",
+                                  wellCutoff = Well.cutoff,                                  
+                                  hintCutoff = Inf) # Set it to Inf so it does nothing
 
     # Create the boosted model
     boosted.results <- buildBoostedModel(prepped.data)
@@ -72,7 +90,11 @@ hint.df <- data_frame(Threshold = rep(hint.values,2),
                                 )
                       )
 
-hint.plot <- ggscatter(hint.df, x = "Threshold", y = "MCC", color = "Model")
+# Create two rows for extra points and add it with a slightly negative value for hint
+new.rows <- data_frame(Threshold = rep(-1e-7,2),
+                       MCC = all.points.MCCs,
+                       Model = c("Gradient Boosted", "Logistic Regression"))
+hint.df <- bind_rows(hint.df, new.rows)
 
 well.values <- seq(-5, 0, 0.1) # 50 values
 #well.values <- seq(-5, 0, 0.25) # 20 values
@@ -87,6 +109,14 @@ well.df <- data_frame(Threshold = rep(well.values,2),
                                 )
                       )
 
+# Add the extra point, using a slightly positive threshold for Wellington
+new.rows <- data_frame(Threshold = rep(1e-7,2),
+                       MCC = all.points.MCCs,
+                       Model = c("Gradient Boosted", "Logistic Regression"))
+well.df <- bind_rows(well.df, new.rows)
+
+
+hint.plot <- ggscatter(hint.df, x = "Threshold", y = "MCC", color = "Model")
 well.plot <- ggscatter(well.df, x = "Threshold", y = "MCC", color = "Model")
 
 # Make the figure 1 x 2

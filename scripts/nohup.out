@@ -44,6 +44,26 @@ Loading required package: magrittr
 > # Glue them together to make the joined dataset
 > joined.df <- joinModelData(seed.16, seed.20)
 > 
+> # Solve once using all points
+> prepped.data <- prepModelData(joined.df, "both",
++                               wellCutoff = 1, # Set it above 0 so it filters nothing                                  
++                               hintCutoff = -1) # Set it below 0 so it filters nothing
+> # Create the boosted model
+> boosted.results <- buildBoostedModel(prepped.data)
+[01:05:01] Tree method is automatically selected to be 'approx' for faster speed. to use old behavior(exact greedy algorithm on single machine), set tree_method to 'exact'
+> # Create the linear models
+> linear.results <- buildLinearModels(prepped.data)
+Warning messages:
+1: In predict.lm(object, newdata, se.fit, scale = 1, type = ifelse(type ==  :
+  prediction from a rank-deficient fit may be misleading
+2: glm.fit: fitted probabilities numerically 0 or 1 occurred 
+3: glm.fit: fitted probabilities numerically 0 or 1 occurred 
+> # Pull out the MCC max value vector
+> mcc.vector <- extractMaxMCC(boosted.results[[1]], linear.results)
+> # Return just the boosted and full linear values
+> all.points.MCCs <- mcc.vector[c("gradient boosted model",
++                                 "linear model (all regressors)")]
+> 
 > # Create a function that:
 > # 1) Takes a HINT cutoff value that we'll vary
 > # 2) Runs "prepModelData" to filter according to the cutoff value
@@ -54,7 +74,9 @@ Loading required package: magrittr
 > findMCCsForHINTCutoff <- function(HINT.cutoff){
 + 
 +     # Prep the data as specified by the cutoff
-+     prepped.data <- prepModelData(joined.df, "both", hintCutoff = HINT.cutoff)
++     prepped.data <- prepModelData(joined.df, "both",
++                                   hintCutoff = HINT.cutoff,
++                                   wellCutoff = -Inf) # Set to -Inf so it's effectively not a filter
 + 
 +     # Create the boosted model
 +     boosted.results <- buildBoostedModel(prepped.data)
@@ -74,7 +96,9 @@ Loading required package: magrittr
 > findMCCsForWellingtonCutoff <- function(Well.cutoff){
 + 
 +     # Prep the data as specified by the cutoff
-+     prepped.data <- prepModelData(joined.df, "both", wellCutoff = Well.cutoff)
++     prepped.data <- prepModelData(joined.df, "both",
++                                   wellCutoff = Well.cutoff,                                  
++                                   hintCutoff = Inf) # Set it to Inf so it does nothing
 + 
 +     # Create the boosted model
 +     boosted.results <- buildBoostedModel(prepped.data)
@@ -106,7 +130,11 @@ There were 50 or more warnings (use warnings() to see the first 50)
 +                                 )
 +                       )
 > 
-> hint.plot <- ggscatter(hint.df, x = "Threshold", y = "MCC", color = "Model")
+> # Create two rows for extra points and add it with a slightly negative value for hint
+> new.rows <- data_frame(Threshold = rep(-1e-7,2),
++                        MCC = all.points.MCCs,
++                        Model = c("Gradient Boosted", "Logistic Regression"))
+> hint.df <- bind_rows(hint.df, new.rows)
 > 
 > well.values <- seq(-5, 0, 0.1) # 50 values
 > #well.values <- seq(-5, 0, 0.25) # 20 values
@@ -122,6 +150,14 @@ There were 50 or more warnings (use warnings() to see the first 50)
 +                                 )
 +                       )
 > 
+> # Add the extra point, using a slightly positive threshold for Wellington
+> new.rows <- data_frame(Threshold = rep(1e-7,2),
++                        MCC = all.points.MCCs,
++                        Model = c("Gradient Boosted", "Logistic Regression"))
+> well.df <- bind_rows(well.df, new.rows)
+> 
+> 
+> hint.plot <- ggscatter(hint.df, x = "Threshold", y = "MCC", color = "Model")
 > well.plot <- ggscatter(well.df, x = "Threshold", y = "MCC", color = "Model")
 > 
 > # Make the figure 1 x 2
